@@ -1,0 +1,181 @@
+# Compiled binaries
+*.exe
+*.out
+*.app
+a.out
+
+# Shared libraries
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Static libraries
+*.a
+*.lib
+
+# Object files
+*.o
+*.obj
+*.lo
+*.slo
+
+# Build directories
+build/
+bin/
+obj/
+out/
+target/
+
+# Dependencies
+_deps/
+
+# Debug symbols
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled headers
+*.gch
+*.pch
+
+# Test executables and results
+tests/test_runner
+tests/*.test
+tests/results/
+*.log
+*.tlog
+
+# Coverage files
+*.gcno
+*.gcda
+*.gcov
+coverage/
+htmlcov/
+.coverage
+
+# Profiling
+gmon.out
+*.prof
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+wheels/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-*
+.project
+.cproject
+.settings/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
+*.cmake.in
+CTestTestfile.cmake
+_deps/
+
+# Autotools
+.deps/
+.libs/
+*.la
+Makefile.in
+aclocal.m4
+autom4te.cache/
+compile
+config.guess
+config.h
+config.h.in
+config.log
+config.status
+config.sub
+configure
+depcomp
+install-sh
+libtool
+ltmain.sh
+missing
+stamp-h1
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Tags and symbols
+tags
+TAGS
+.tags
+.tags_sorted_by_file
+cscope.out
+cscope.in.out
+cscope.po.out
+GPATH
+GRTAGS
+GSYMS
+GTAGS
+
+# SQLite databases (if used for testing)
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Valgrind output
+valgrind-*.log
+memcheck-*.log
+*.memcheck
+
+# Sanitizer outputs
+*.san
+
+# Documentation builds
+docs/_build/
+docs/.doctrees/
+*.pdf
+
