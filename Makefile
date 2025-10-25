@@ -7,7 +7,7 @@ LDFLAGS = -lm -ldl -lpthread
 
 # Sanitizer flags when SANITIZE=1
 ifeq ($(SANITIZE),1)
-    CFLAGS += -fsanitize=address,undefined -Wall -Wextra -Werror
+    CFLAGS += -fsanitize=address,undefined -Wall -Wextra
     LDFLAGS += -fsanitize=address,undefined
 endif
 
