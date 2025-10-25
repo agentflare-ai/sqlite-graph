@@ -1,27 +1,16 @@
-/*
-** SQLite Graph Database Extension - Main Entry Point
-**
-** This file contains the main extension initialization function and
-** SQL function registrations. Follows SQLite extension patterns exactly.
-**
-** Compilation: gcc -shared -fPIC -I. graph.c -o graph.so
-** Loading: .load ./graph
-** Usage: CREATE VIRTUAL TABLE mygraph USING graph();
-*/
+/* Main extension entry point - registers virtual table and SQL functions */
 
 #include "sqlite3ext.h"
 SQLITE_EXTENSION_INIT1
 #include "graph.h"
 #include "graph-memory.h"
 #include "graph-vtab.h"
-#include "graph-memory.h"
 #include "cypher.h"
 #include "graph-util.h"
-#include "graph-memory.h"
 #include "cypher-planner.h"
 #include "cypher-executor.h"
 #include <string.h>
-#include <stdio.h> // Added for fprintf
+#include <stdio.h>
 
 /* Macro to suppress unused parameter warnings */
 #define UNUSED(x) ((void)(x))
@@ -364,14 +353,14 @@ sqlite3_result_error(pCtx, "No graph table available. Create a graph table first
 }
 
 /*
-** SQL function: graph_edge_add(from_id, to_id, weight, properties)
+** SQL function: graph_edge_add(source, target, edge_type, properties)
 ** Adds an edge to the default graph virtual table.
-** Usage: SELECT graph_edge_add(1, 2, 1.0, '{"type": "friend"}');
+** Usage: SELECT graph_edge_add(1, 2, 'FRIENDS', '{"since": "2020"}');
 */
 static void graphEdgeAddFunc(sqlite3_context *pCtx, int argc,
                             sqlite3_value **argv){
   sqlite3_int64 iFromId, iToId;
-  double rWeight;
+  const unsigned char *zEdgeType;
   const unsigned char *zProperties;
   char *zSql;
   int rc;
@@ -386,14 +375,16 @@ static void graphEdgeAddFunc(sqlite3_context *pCtx, int argc,
     sqlite3_result_error(pCtx, "graph_edge_add() requires 4 arguments", -1);
     return;
   }
-  
+
   /* Extract arguments */
   iFromId = sqlite3_value_int64(argv[0]);
   iToId = sqlite3_value_int64(argv[1]);
-  rWeight = sqlite3_value_double(argv[2]);
+  zEdgeType = sqlite3_value_text(argv[2]);
   zProperties = sqlite3_value_text(argv[3]);
 
-  zSql = sqlite3_mprintf("INSERT INTO %s_edges(from_id, to_id, weight, properties) VALUES(%lld, %lld, %f, %Q)", pGraph->zTableName, iFromId, iToId, rWeight, zProperties);
+  /* Insert with correct column names: source, target, edge_type, properties */
+  zSql = sqlite3_mprintf("INSERT INTO %s_edges(source, target, edge_type, properties) VALUES(%lld, %lld, %Q, %Q)",
+                         pGraph->zTableName, iFromId, iToId, zEdgeType, zProperties);
   rc = sqlite3_exec(pGraph->pDb, zSql, 0, 0, 0);
   sqlite3_free(zSql);
 
@@ -428,7 +419,6 @@ static void graphCountNodesFunc(sqlite3_context *pCtx, int argc,
     return;
   }
 
-  fprintf(stderr, "graphCountNodesFunc: pGraph=%p, zTableName=%s\n", (void*)pGraph, pGraph->zTableName);
   zSql = sqlite3_mprintf("SELECT count(*) FROM %s_nodes", pGraph->zTableName);
   rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, 0);
   sqlite3_free(zSql);
@@ -552,7 +542,7 @@ static void graphShortestPathFunc(sqlite3_context *pCtx, int argc,
     if( currentNodeId==iEndId ) break;
 
     // Explore neighbors
-    char *zSql = sqlite3_mprintf("SELECT to_id FROM %s_edges WHERE from_id = %lld", pGraph->zTableName, currentNodeId);
+    char *zSql = sqlite3_mprintf("SELECT target FROM %s_edges WHERE source = %lld", pGraph->zTableName, currentNodeId);
     sqlite3_stmt *pStmt;
     int rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, 0);
     sqlite3_free(zSql);
@@ -676,7 +666,7 @@ static void graphPageRankFunc(sqlite3_context *pCtx, int argc,
     pOutDegree[i] = 0;
   }
 
-  zSql = sqlite3_mprintf("SELECT from_id, count(*) FROM %s_edges GROUP BY from_id", pGraph->zTableName);
+  zSql = sqlite3_mprintf("SELECT source, count(*) FROM %s_edges GROUP BY source", pGraph->zTableName);
   rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, 0);
   sqlite3_free(zSql);
   while( sqlite3_step(pStmt)==SQLITE_ROW ){
@@ -688,7 +678,7 @@ static void graphPageRankFunc(sqlite3_context *pCtx, int argc,
     for(int j=0; j<=nNodes; j++){
       pNextRank[j] = (1.0 - rDamping) / nNodes;
     }
-    zSql = sqlite3_mprintf("SELECT from_id, to_id FROM %s_edges", pGraph->zTableName);
+    zSql = sqlite3_mprintf("SELECT source, target FROM %s_edges", pGraph->zTableName);
     rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, 0);
     sqlite3_free(zSql);
     while( sqlite3_step(pStmt)==SQLITE_ROW ){
@@ -760,7 +750,7 @@ iNodeId = sqlite3_value_int64(argv[0]);
   }
   
   /* Calculate degree centrality by counting edges connected to this node */
-  zSql = sqlite3_mprintf("SELECT count(*) FROM %s_edges WHERE from_id=%lld OR to_id=%lld", 
+  zSql = sqlite3_mprintf("SELECT count(*) FROM %s_edges WHERE source=%lld OR target=%lld",
                          pGraph->zTableName, iNodeId, iNodeId);
   rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, 0);
   sqlite3_free(zSql);
@@ -1050,7 +1040,7 @@ if( argc!=0 ){
   }
   
   /* Simple cycle detection: check if any node has an edge to itself */
-  zSql = sqlite3_mprintf("SELECT count(*) FROM %s_edges WHERE from_id = to_id", pGraph->zTableName);
+  zSql = sqlite3_mprintf("SELECT count(*) FROM %s_edges WHERE source = target", pGraph->zTableName);
   rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, 0);
   sqlite3_free(zSql);
   
@@ -1192,7 +1182,7 @@ int graphRemoveNode(GraphVtab *pVtab, sqlite3_int64 iNodeId){
   sqlite3_free(zSql);
   if( rc!=SQLITE_OK ) return rc;
 
-  zSql = sqlite3_mprintf("DELETE FROM %s_edges WHERE from_id = %lld OR to_id = %lld", pVtab->zTableName, iNodeId, iNodeId);
+  zSql = sqlite3_mprintf("DELETE FROM %s_edges WHERE source = %lld OR target = %lld", pVtab->zTableName, iNodeId, iNodeId);
   rc = sqlite3_exec(pVtab->pDb, zSql, 0, 0, 0);
   sqlite3_free(zSql);
 
@@ -1228,7 +1218,7 @@ int graphAddEdge(GraphVtab *pVtab, sqlite3_int64 iFromId,
   char *zSql;
   int rc;
 
-  zSql = sqlite3_mprintf("INSERT INTO %s_edges(from_id, to_id, weight, properties) VALUES(%lld, %lld, %f, %Q)", pVtab->zTableName, iFromId, iToId, rWeight, zProperties);
+  zSql = sqlite3_mprintf("INSERT INTO %s_edges(source, target, weight, properties) VALUES(%lld, %lld, %f, %Q)", pVtab->zTableName, iFromId, iToId, rWeight, zProperties);
   rc = sqlite3_exec(pVtab->pDb, zSql, 0, 0, 0);
   sqlite3_free(zSql);
 
@@ -1240,7 +1230,7 @@ int graphRemoveEdge(GraphVtab *pVtab, sqlite3_int64 iFromId,
   char *zSql;
   int rc;
 
-  zSql = sqlite3_mprintf("DELETE FROM %s_edges WHERE from_id = %lld AND to_id = %lld", pVtab->zTableName, iFromId, iToId);
+  zSql = sqlite3_mprintf("DELETE FROM %s_edges WHERE source = %lld AND target = %lld", pVtab->zTableName, iFromId, iToId);
   rc = sqlite3_exec(pVtab->pDb, zSql, 0, 0, 0);
   sqlite3_free(zSql);
 
@@ -1266,7 +1256,7 @@ int graphGetEdge(GraphVtab *pVtab, sqlite3_int64 iFromId,
   sqlite3_stmt *pStmt;
   int rc;
 
-  zSql = sqlite3_mprintf("SELECT weight, properties FROM %s_edges WHERE from_id = %lld AND to_id = %lld", pVtab->zTableName, iFromId, iToId);
+  zSql = sqlite3_mprintf("SELECT weight, properties FROM %s_edges WHERE source = %lld AND target = %lld", pVtab->zTableName, iFromId, iToId);
   rc = sqlite3_prepare_v2(pVtab->pDb, zSql, -1, &pStmt, 0);
   sqlite3_free(zSql);
   if( rc!=SQLITE_OK ) return rc;
@@ -1347,7 +1337,7 @@ GraphEdge *graphFindEdge(GraphVtab *pVtab, sqlite3_int64 iFromId,
   int rc;
   GraphEdge *pEdge = 0;
 
-  zSql = sqlite3_mprintf("SELECT id, from_id, to_id, weight, properties FROM %s_edges WHERE from_id = %lld AND to_id = %lld", pVtab->zTableName, iFromId, iToId);
+  zSql = sqlite3_mprintf("SELECT id, source, target, weight, properties FROM %s_edges WHERE source = %lld AND target = %lld", pVtab->zTableName, iFromId, iToId);
   rc = sqlite3_prepare_v2(pVtab->pDb, zSql, -1, &pStmt, 0);
   sqlite3_free(zSql);
   if( rc!=SQLITE_OK ) return 0;
@@ -1440,7 +1430,7 @@ static void graphNodeDeleteFunc(sqlite3_context *pCtx, int argc, sqlite3_value *
 }
 
 /*
-** SQL function: graph_edge_update(edge_id, from_id, to_id, weight, properties)
+** SQL function: graph_edge_update(edge_id, source, target, weight, properties)
 ** Updates an existing edge.
 ** Usage: SELECT graph_edge_update(1, 1, 2, 2.0, '{"updated": true}');
 */
@@ -1467,7 +1457,7 @@ static void graphEdgeUpdateFunc(sqlite3_context *pCtx, int argc, sqlite3_value *
   rWeight = sqlite3_value_double(argv[3]);
   zProperties = sqlite3_value_text(argv[4]);
 
-  zSql = sqlite3_mprintf("UPDATE %s_edges SET from_id = %lld, to_id = %lld, weight = %f, properties = %Q WHERE id = %lld", 
+  zSql = sqlite3_mprintf("UPDATE %s_edges SET source = %lld, target = %lld, weight = %f, properties = %Q WHERE id = %lld", 
                          pGraph->zTableName, iFromId, iToId, rWeight, zProperties, iEdgeId);
   rc = sqlite3_exec(pGraph->pDb, zSql, 0, 0, 0);
   sqlite3_free(zSql);
@@ -1575,7 +1565,7 @@ static void graphCascadeDeleteNodeFunc(sqlite3_context *pCtx, int argc, sqlite3_
   iNodeId = sqlite3_value_int64(argv[0]);
 
   /* Delete all edges connected to this node */
-  zSql = sqlite3_mprintf("DELETE FROM %s_edges WHERE from_id = %lld OR to_id = %lld", 
+  zSql = sqlite3_mprintf("DELETE FROM %s_edges WHERE source = %lld OR target = %lld", 
                          pGraph->zTableName, iNodeId, iNodeId);
   rc = sqlite3_exec(pGraph->pDb, zSql, 0, 0, 0);
   sqlite3_free(zSql);

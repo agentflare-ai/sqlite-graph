@@ -148,8 +148,8 @@ static sqlite3_int64 dictAddString(const char *zStr) {
         sqlite3_mutex_leave(g_stringDict->mutex);
         return 0;
     }
-    
-    strcpy(entry->zValue, zStr);
+
+    memcpy(entry->zValue, zStr, len + 1);
     entry->dictId = g_stringDict->nextId++;
     entry->refCount = 1;
     entry->length = len;
@@ -203,58 +203,93 @@ static const char* dictGetString(sqlite3_int64 dictId) {
 */
 char* graphCompressProperties(const char *zProperties) {
     if (!zProperties || !g_stringDict) return NULL;
-    
+
     /* Parse JSON properties */
     /* This is a simplified implementation - real version would use proper JSON parser */
-    
-    /* Look for string values that appear frequently */
-    char *compressed = sqlite3_malloc(strlen(zProperties) + 100);
+
+    /* Allocate buffer large enough for worst case */
+    size_t inputLen = strlen(zProperties);
+    size_t bufSize = inputLen * 2 + 256; /* Conservative estimate */
+    char *compressed = sqlite3_malloc(bufSize);
     if (!compressed) return NULL;
-    
-    strcpy(compressed, "{\"_compressed\":true,");
-    
+
+    size_t offset = 0;
+    const char *prefix = "{\"_compressed\":true,";
+    size_t prefixLen = strlen(prefix);
+    if (prefixLen >= bufSize) {
+        sqlite3_free(compressed);
+        return NULL;
+    }
+    memcpy(compressed + offset, prefix, prefixLen);
+    offset += prefixLen;
+    compressed[offset] = '\0';
+
     /* Simple pattern matching for demonstration */
     const char *p = zProperties;
+    int n;  /* For snprintf return value */
     while (*p) {
         if (*p == '"') {
             /* Found start of string */
             p++;
             const char *start = p;
             while (*p && *p != '"') p++;
-            
+
             if (*p == '"') {
                 /* Extract string value */
                 size_t len = p - start;
                 char *value = sqlite3_malloc(len + 1);
                 if (value) {
-                    strncpy(value, start, len);
+                    memcpy(value, start, len);
                     value[len] = '\0';
-                    
+
                     /* Check if worth compressing (length > 10) */
                     if (len > 10) {
                         sqlite3_int64 dictId = dictAddString(value);
                         if (dictId > 0) {
                             /* Replace with dictionary reference */
-                            char dictRef[32];
-                            sqlite3_snprintf(sizeof(dictRef), dictRef,
-                                           "\"_dict\":%lld", dictId);
-                            strcat(compressed, dictRef);
+                            char *dictRef = sqlite3_mprintf("\"_dict\":%lld", dictId);
+                            if (dictRef) {
+                                size_t dictLen = strlen(dictRef);
+                                if (offset + dictLen >= bufSize) {
+                                    sqlite3_free(dictRef);
+                                    sqlite3_free(value);
+                                    sqlite3_free(compressed);
+                                    return NULL;
+                                }
+                                memcpy(compressed + offset, dictRef, dictLen);
+                                offset += dictLen;
+                                compressed[offset] = '\0';
+                                sqlite3_free(dictRef);
+                            }
                         }
                     } else {
-                        /* Keep original string */
-                        strcat(compressed, "\"");
-                        strcat(compressed, value);
-                        strcat(compressed, "\"");
+                        /* Keep original string - need to escape quotes properly */
+                        if (offset + len + 3 >= bufSize) {
+                            sqlite3_free(value);
+                            sqlite3_free(compressed);
+                            return NULL;
+                        }
+                        compressed[offset++] = '"';
+                        memcpy(compressed + offset, value, len);
+                        offset += len;
+                        compressed[offset++] = '"';
+                        compressed[offset] = '\0';
                     }
-                    
+
                     sqlite3_free(value);
                 }
             }
         }
         p++;
     }
-    
-    strcat(compressed, "}");
+
+    if (offset + 2 >= bufSize) {
+        sqlite3_free(compressed);
+        return NULL;
+    }
+    compressed[offset++] = '}';
+    compressed[offset] = '\0';
+
     return compressed;
 }
 
@@ -263,18 +298,21 @@ char* graphCompressProperties(const char *zProperties) {
 */
 char* graphDecompressProperties(const char *zCompressed) {
     if (!zCompressed) return NULL;
-    
+
     /* Check if compressed */
     if (!strstr(zCompressed, "_compressed")) {
         /* Not compressed, return copy */
         return sqlite3_mprintf("%s", zCompressed);
     }
-    
-    char *decompressed = sqlite3_malloc(strlen(zCompressed) * 2);
+
+    size_t bufSize = strlen(zCompressed) * 4 + 256; /* Conservative estimate */
+    char *decompressed = sqlite3_malloc(bufSize);
     if (!decompressed) return NULL;
-    
-    strcpy(decompressed, "{");
-    
+
+    size_t offset = 0;
+    decompressed[offset++] = '{';
+    decompressed[offset] = '\0';
+
     /* Look for dictionary references */
     const char *p = strstr(zCompressed, "_dict");
     while (p) {
@@ -285,19 +323,32 @@ char* graphDecompressProperties(const char *zCompressed) {
             dictId = dictId * 10 + (*p - '0');
             p++;
         }
-        
+
         /* Look up string */
         const char *value = dictGetString(dictId);
         if (value) {
-            strcat(decompressed, "\"");
-            strcat(decompressed, value);
-            strcat(decompressed, "\"");
+            size_t valueLen = strlen(value);
+            if (offset + valueLen + 3 >= bufSize) {
+                sqlite3_free(decompressed);
+                return NULL;
+            }
+            decompressed[offset++] = '"';
+            memcpy(decompressed + offset, value, valueLen);
+            offset += valueLen;
+            decompressed[offset++] = '"';
+            decompressed[offset] = '\0';
         }
-        
+
         p = strstr(p, "_dict");
     }
-    
-    strcat(decompressed, "}");
+
+    if (offset + 2 >= bufSize) {
+        sqlite3_free(decompressed);
+        return NULL;
+    }
+    decompressed[offset++] = '}';
+    decompressed[offset] = '\0';
+
     return decompressed;
 }
 

@@ -54,6 +54,9 @@ vgcore.*
 tests/test_runner
 tests/*.test
 tests/results/
+tests/debug_*
+tests/tck_test_*
+!tests/tck_test_*.c
 *.log
 *.tlog
 

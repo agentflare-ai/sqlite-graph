@@ -1,19 +1,4 @@
-/*
-** SQLite Graph Database Extension - Physical Plan Implementation
-**
-** This file implements the physical query execution plan data structures
-** and optimization functions for converting logical plans into optimized
-** physical execution plans with specific operator implementations.
-**
-** Features:
-** - Physical plan node creation and management
-** - Logical to physical plan conversion
-** - Cost-based operator selection
-** - Index utilization planning
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes
-*/
+/* Physical execution plan - converts logical plan to executable operators */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE
@@ -24,10 +9,6 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include <string.h>
 #include <assert.h>
 
-/*
-** Create a new physical plan node.
-** Returns NULL on allocation failure.
-*/
 PhysicalPlanNode *physicalPlanNodeCreate(PhysicalOperatorType type) {
   PhysicalPlanNode *pNode;
   
@@ -74,23 +55,29 @@ void physicalPlanNodeDestroy(PhysicalPlanNode *pNode) {
 */
 int physicalPlanNodeAddChild(PhysicalPlanNode *pParent, PhysicalPlanNode *pChild) {
   PhysicalPlanNode **apNew;
-  
+
   if( !pParent || !pChild ) return SQLITE_MISUSE;
-  
+
   /* Resize children array if needed */
   if( pParent->nChildren >= pParent->nChildrenAlloc ) {
     int nNew = pParent->nChildrenAlloc ? pParent->nChildrenAlloc * 2 : 4;
-    apNew = sqlite3_realloc(pParent->apChildren, 
+    apNew = sqlite3_realloc(pParent->apChildren,
                            nNew * sizeof(PhysicalPlanNode*));
     if( !apNew ) return SQLITE_NOMEM;
-    
+
     pParent->apChildren = apNew;
     pParent->nChildrenAlloc = nNew;
   }
-  
+
   /* Add child */
   pParent->apChildren[pParent->nChildren++] = pChild;
-  
+
+  /* For single-child operators (Projection, Filter, Sort, Limit),
+     also set pChild pointer for convenience */
+  if( pParent->nChildren == 1 ) {
+    pParent->pChild = pChild;
+  }
+
   return SQLITE_OK;
 }
 
@@ -113,6 +100,11 @@ const char *physicalOperatorTypeName(PhysicalOperatorType type) {
     case PHYSICAL_SORT:               return "Sort";
     case PHYSICAL_LIMIT:              return "Limit";
     case PHYSICAL_AGGREGATION:        return "Aggregation";
+    case PHYSICAL_CREATE:             return "Create";
+    case PHYSICAL_MERGE:              return "Merge";
+    case PHYSICAL_SET:                return "Set";
+    case PHYSICAL_DELETE:             return "Delete";
+    case PHYSICAL_REMOVE:             return "Remove";
     default:                          return "Unknown";
   }
 }
@@ -197,15 +189,42 @@ PhysicalPlanNode *logicalPlanToPhysical(LogicalPlanNode *pLogical, PlanContext *
     case LOGICAL_SORT:
       pPhysical = physicalPlanNodeCreate(PHYSICAL_SORT);
       break;
-      
+
+    case LOGICAL_SKIP:
+      /* SKIP is implemented as LIMIT with offset */
+      /* For now, map to LIMIT - full implementation would need separate SKIP physical operator */
+      pPhysical = physicalPlanNodeCreate(PHYSICAL_LIMIT);
+      if( pPhysical && pLogical->zValue ) {
+        /* Mark this as a SKIP by storing negative limit? Or use flags */
+        pPhysical->iFlags |= 0x01; /* SKIP flag */
+      }
+      break;
+
     case LOGICAL_LIMIT:
       pPhysical = physicalPlanNodeCreate(PHYSICAL_LIMIT);
       break;
-      
+
     case LOGICAL_AGGREGATION:
       pPhysical = physicalPlanNodeCreate(PHYSICAL_AGGREGATION);
       break;
-      
+
+    case LOGICAL_CREATE:
+      pPhysical = physicalPlanNodeCreate(PHYSICAL_CREATE);
+      break;
+
+    case LOGICAL_MERGE:
+      pPhysical = physicalPlanNodeCreate(PHYSICAL_MERGE);
+      break;
+
+    case LOGICAL_SET:
+      pPhysical = physicalPlanNodeCreate(PHYSICAL_SET);
+      break;
+
+    case LOGICAL_DELETE:
+    case LOGICAL_DETACH_DELETE:
+      pPhysical = physicalPlanNodeCreate(PHYSICAL_DELETE);
+      break;
+
     default:
       /* Default to filter for unknown operations */
       pPhysical = physicalPlanNodeCreate(PHYSICAL_FILTER);
@@ -218,7 +237,16 @@ PhysicalPlanNode *logicalPlanToPhysical(LogicalPlanNode *pLogical, PlanContext *
   if( pLogical->zAlias ) {
     pPhysical->zAlias = sqlite3_mprintf("%s", pLogical->zAlias);
   }
-  
+  if( pLogical->zLabel ) {
+    pPhysical->zLabel = sqlite3_mprintf("%s", pLogical->zLabel);
+  }
+  if( pLogical->zProperty ) {
+    pPhysical->zProperty = sqlite3_mprintf("%s", pLogical->zProperty);
+  }
+  if( pLogical->zValue ) {
+    pPhysical->zValue = sqlite3_mprintf("%s", pLogical->zValue);
+  }
+
   /* Set cost and row estimates */
   pPhysical->rCost = pLogical->rEstimatedCost;
   pPhysical->iRows = pLogical->iEstimatedRows;

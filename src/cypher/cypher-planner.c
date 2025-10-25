@@ -1,20 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher Query Planner
-**
-** This file implements the main query planner that compiles Cypher ASTs
-** into optimized logical and physical execution plans. The planner handles
-** pattern recognition, cost estimation, and operator selection.
-**
-** Features:
-** - AST to logical plan compilation
-** - Pattern optimization and rewriting
-** - Cost-based physical plan generation
-** - Index utilization planning
-** - Join ordering optimization
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes
-*/
+/* Cypher query planner - compiles AST to logical and physical plans */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE
@@ -24,15 +8,15 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include "cypher-planner.h"
 #include <string.h>
 #include <assert.h>
+#include <stdio.h>
 
-/* Forward declarations for optimization functions */
+/* Forward declarations */
+// TODO: implement cost-based join ordering
 static double calculateJoinCost(LogicalPlanNode *pLeft, LogicalPlanNode *pRight, int joinType);
+// TODO: integrate index selection with query planner
 static int optimizeIndexUsage(LogicalPlanNode *pNode, PlanContext *pContext);
+static LogicalPlanNode *compileExpression(CypherAst *pAst, PlanContext *pContext);
 
-/*
-** Create a new Cypher query planner.
-** Returns NULL on allocation failure.
-*/
 CypherPlanner *cypherPlannerCreate(sqlite3 *pDb, GraphVtab *pGraph) {
   CypherPlanner *pPlanner;
   
@@ -61,10 +45,6 @@ CypherPlanner *cypherPlannerCreate(sqlite3 *pDb, GraphVtab *pGraph) {
   return pPlanner;
 }
 
-/*
-** Destroy a Cypher planner and free all associated memory.
-** Safe to call with NULL pointer.
-*/
 void cypherPlannerDestroy(CypherPlanner *pPlanner) {
   int i;
   
@@ -155,20 +135,17 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
   switch( pAst->type ) {
     case CYPHER_AST_QUERY:
     case CYPHER_AST_SINGLE_QUERY:
-      /* Compile children and combine them */
+      /* Compile children and combine them into a pipeline */
       if( pAst->nChildren > 0 ) {
         pLogical = compileAstNode(pAst->apChildren[0], pContext);
-        
+
         for( i = 1; i < pAst->nChildren; i++ ) {
           pChild = compileAstNode(pAst->apChildren[i], pContext);
           if( pChild && pLogical ) {
-            /* Create a join or sequence node */
-            LogicalPlanNode *pJoin = logicalPlanNodeCreate(LOGICAL_HASH_JOIN);
-            if( pJoin ) {
-              logicalPlanNodeAddChild(pJoin, pLogical);
-              logicalPlanNodeAddChild(pJoin, pChild);
-              pLogical = pJoin;
-            }
+            /* Build a pipeline: child consumes output from pLogical */
+            /* For example: MATCH (n) RETURN n becomes PROJECTION <- SCAN */
+            logicalPlanNodeAddChild(pChild, pLogical);
+            pLogical = pChild;
           }
         }
       }
@@ -253,20 +230,20 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       if( pLogical && pAst->nChildren > 0 ) {
         /* Process projection list */
         CypherAst *pProjList = pAst->apChildren[0];
-        if( cypherAstIsType(pProjList, CYPHER_AST_PROJECTION_LIST) && 
+        if( cypherAstIsType(pProjList, CYPHER_AST_PROJECTION_LIST) &&
             pProjList->nChildren > 0 ) {
           CypherAst *pItem = pProjList->apChildren[0];
-          if( cypherAstIsType(pItem, CYPHER_AST_PROJECTION_ITEM) && 
+          if( cypherAstIsType(pItem, CYPHER_AST_PROJECTION_ITEM) &&
               pItem->nChildren > 0 ) {
             CypherAst *pExpr = pItem->apChildren[0];
-            
+
             if( cypherAstIsType(pExpr, CYPHER_AST_IDENTIFIER) ) {
               logicalPlanNodeSetAlias(pLogical, cypherAstGetValue(pExpr));
-            } else if( cypherAstIsType(pExpr, CYPHER_AST_PROPERTY) && 
+            } else if( cypherAstIsType(pExpr, CYPHER_AST_PROPERTY) &&
                        pExpr->nChildren >= 2 ) {
               const char *zVar = cypherAstGetValue(pExpr->apChildren[0]);
               const char *zProp = cypherAstGetValue(pExpr->apChildren[1]);
-              
+
               logicalPlanNodeSetAlias(pLogical, zVar);
               logicalPlanNodeSetProperty(pLogical, zProp);
             }
@@ -274,7 +251,347 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
         }
       }
       break;
-      
+
+    case CYPHER_AST_SKIP:
+      /* SKIP clause becomes a skip operation */
+      pLogical = logicalPlanNodeCreate(LOGICAL_SKIP);
+      if( pLogical && pAst->nChildren > 0 ) {
+        /* Get skip value from child (should be a literal) */
+        const char *zSkip = cypherAstGetValue(pAst->apChildren[0]);
+        if( zSkip ) {
+          logicalPlanNodeSetValue(pLogical, zSkip);
+        }
+      }
+      break;
+
+    case CYPHER_AST_LIMIT:
+      /* LIMIT clause becomes a limit operation */
+      pLogical = logicalPlanNodeCreate(LOGICAL_LIMIT);
+      if( pLogical && pAst->nChildren > 0 ) {
+        /* Get limit value from child (should be a literal) */
+        const char *zLimit = cypherAstGetValue(pAst->apChildren[0]);
+        if( zLimit ) {
+          logicalPlanNodeSetValue(pLogical, zLimit);
+        }
+      }
+      break;
+
+    case CYPHER_AST_IDENTIFIER:
+    case CYPHER_AST_LITERAL:
+    case CYPHER_AST_PROPERTY:
+      /* Expression nodes - these are typically handled within their parent context */
+      /* For now, compile them as simple placeholder nodes that can be used by parent */
+      pLogical = compileExpression(pAst, pContext);
+      break;
+
+    case CYPHER_AST_COMPARISON:
+      /* Comparison expression becomes a filter */
+      pLogical = logicalPlanNodeCreate(LOGICAL_FILTER);
+      if( pLogical && pAst->nChildren >= 2 ) {
+        /* For basic comparisons, extract property and value */
+        CypherAst *pLeft = pAst->apChildren[0];
+        CypherAst *pRight = pAst->apChildren[1];
+
+        /* Check if left side is a property access */
+        if( cypherAstIsType(pLeft, CYPHER_AST_PROPERTY) && pLeft->nChildren >= 2 ) {
+          const char *zVar = cypherAstGetValue(pLeft->apChildren[0]);
+          const char *zProp = cypherAstGetValue(pLeft->apChildren[1]);
+          const char *zValue = cypherAstGetValue(pRight);
+
+          if( zVar ) logicalPlanNodeSetAlias(pLogical, zVar);
+          if( zProp ) logicalPlanNodeSetProperty(pLogical, zProp);
+          if( zValue ) logicalPlanNodeSetValue(pLogical, zValue);
+        }
+      }
+      break;
+
+    case CYPHER_AST_AND:
+      /* AND operator - combine left and right filters */
+      if( pAst->nChildren >= 2 ) {
+        LogicalPlanNode *pLeft = compileAstNode(pAst->apChildren[0], pContext);
+        LogicalPlanNode *pRight = compileAstNode(pAst->apChildren[1], pContext);
+
+        if( pLeft && pRight ) {
+          /* Create a filter node that contains both conditions */
+          pLogical = logicalPlanNodeCreate(LOGICAL_FILTER);
+          if( pLogical ) {
+            logicalPlanNodeAddChild(pLogical, pLeft);
+            logicalPlanNodeAddChild(pLogical, pRight);
+          }
+        }
+      }
+      break;
+
+    case CYPHER_AST_OR:
+      /* OR operator - combine left and right filters */
+      if( pAst->nChildren >= 2 ) {
+        LogicalPlanNode *pLeft = compileAstNode(pAst->apChildren[0], pContext);
+        LogicalPlanNode *pRight = compileAstNode(pAst->apChildren[1], pContext);
+
+        if( pLeft && pRight ) {
+          /* Create a filter node that contains either condition */
+          pLogical = logicalPlanNodeCreate(LOGICAL_FILTER);
+          if( pLogical ) {
+            logicalPlanNodeAddChild(pLogical, pLeft);
+            logicalPlanNodeAddChild(pLogical, pRight);
+          }
+        }
+      }
+      break;
+
+    case CYPHER_AST_NOT:
+      /* NOT operator - negate the child filter */
+      if( pAst->nChildren > 0 ) {
+        LogicalPlanNode *pChild = compileAstNode(pAst->apChildren[0], pContext);
+        if( pChild ) {
+          pLogical = logicalPlanNodeCreate(LOGICAL_FILTER);
+          if( pLogical ) {
+            logicalPlanNodeAddChild(pLogical, pChild);
+            /* Mark this as a NOT filter using flags */
+            pLogical->iFlags |= 0x01; /* NOT flag */
+          }
+        }
+      }
+      break;
+
+    case CYPHER_AST_LABELS:
+      /* Labels list - typically handled by parent NODE_PATTERN */
+      /* Return NULL since this should be processed in context */
+      break;
+
+    case CYPHER_AST_PATTERN:
+      /* Pattern becomes a sequence of node/relationship matches */
+      if( pAst->nChildren > 0 ) {
+        pLogical = compileAstNode(pAst->apChildren[0], pContext);
+
+        /* Combine multiple pattern elements with joins */
+        for( i = 1; i < pAst->nChildren; i++ ) {
+          pChild = compileAstNode(pAst->apChildren[i], pContext);
+          if( pChild && pLogical ) {
+            LogicalPlanNode *pJoin = logicalPlanNodeCreate(LOGICAL_HASH_JOIN);
+            if( pJoin ) {
+              logicalPlanNodeAddChild(pJoin, pLogical);
+              logicalPlanNodeAddChild(pJoin, pChild);
+              pLogical = pJoin;
+            }
+          }
+        }
+      }
+      break;
+
+    case CYPHER_AST_REL_PATTERN:
+      /* Relationship pattern becomes an expand operation */
+      pLogical = logicalPlanNodeCreate(LOGICAL_EXPAND);
+      if( pLogical ) {
+        /* Extract relationship type if present */
+        for( i = 0; i < pAst->nChildren; i++ ) {
+          if( cypherAstIsType(pAst->apChildren[i], CYPHER_AST_IDENTIFIER) ) {
+            const char *zType = cypherAstGetValue(pAst->apChildren[i]);
+            if( zType ) {
+              logicalPlanNodeSetLabel(pLogical, zType);
+            }
+            break;
+          }
+        }
+      }
+      break;
+
+    case CYPHER_AST_MAP:
+      /* Map literal - used in CREATE ({prop: value}) */
+      /* For now, return NULL - this will be handled by parent CREATE node */
+      break;
+
+    case CYPHER_AST_PROPERTY_PAIR:
+      /* Property key-value pair in a map */
+      /* Handled by parent MAP node */
+      break;
+
+    case CYPHER_AST_PROJECTION_LIST:
+    case CYPHER_AST_PROJECTION_ITEM:
+      /* These are handled within RETURN processing */
+      /* Return NULL - they shouldn't appear as standalone nodes to compile */
+      break;
+
+    case CYPHER_AST_CREATE:
+      /* CREATE clause becomes a create operation */
+      pLogical = logicalPlanNodeCreate(LOGICAL_CREATE);
+      if( pLogical ) {
+        /* Extract pattern information for CREATE if present */
+        /* Unlike MATCH, CREATE patterns define new nodes/rels, not scans */
+
+        if( pAst->nChildren > 0 ) {
+          CypherAst *pPattern = pAst->apChildren[0];
+
+          /* Navigate through PATTERN to NODE_PATTERN */
+          if( cypherAstIsType(pPattern, CYPHER_AST_PATTERN) ) {
+            if( pPattern->nChildren > 0 ) {
+              pPattern = pPattern->apChildren[0];  /* Get first pattern element */
+            } else {
+              /* Empty PATTERN node - CREATE with no elements */
+              /* This is valid, create anonymous node */
+              break;
+            }
+          }
+
+          /* Extract information from NODE_PATTERN */
+
+          /* If still a PATTERN, descend one more level */
+          while( cypherAstIsType(pPattern, CYPHER_AST_PATTERN) && pPattern->nChildren > 0 ) {
+            pPattern = pPattern->apChildren[0];
+          }
+
+          if( cypherAstIsType(pPattern, CYPHER_AST_NODE_PATTERN) ) {
+          /* Handle empty pattern: CREATE () */
+          /* Empty patterns have no children or only property/label children */
+
+          /* Extract alias if present - first child might be IDENTIFIER */
+          if( pPattern->nChildren > 0 && cypherAstIsType(pPattern->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+            const char *zAlias = cypherAstGetValue(pPattern->apChildren[0]);
+            if( zAlias ) {
+              logicalPlanNodeSetAlias(pLogical, zAlias);
+            }
+          }
+
+          /* Extract labels if present - might be first or second child depending on alias */
+          for( i = 0; i < pPattern->nChildren; i++ ) {
+            if( cypherAstIsType(pPattern->apChildren[i], CYPHER_AST_LABELS) ) {
+              CypherAst *pLabels = pPattern->apChildren[i];
+
+              /* Label can be in the LABELS node's zValue or in a child */
+              const char *zLabel = NULL;
+
+              if( pLabels->nChildren > 0 ) {
+                /* Get first label from children */
+                zLabel = cypherAstGetValue(pLabels->apChildren[0]);
+              } else {
+                /* Get label from the LABELS node itself */
+                zLabel = cypherAstGetValue(pLabels);
+              }
+
+              if( zLabel ) {
+                logicalPlanNodeSetLabel(pLogical, zLabel);
+                break;
+              }
+            }
+          }
+
+          /* Extract properties from MAP node if present */
+          for( i = 0; i < pPattern->nChildren; i++ ) {
+            if( cypherAstIsType(pPattern->apChildren[i], CYPHER_AST_MAP) ) {
+              CypherAst *pMap = pPattern->apChildren[i];
+
+              /* Convert MAP to JSON string */
+              char *zJson = sqlite3_mprintf("{");
+              int first = 1;
+
+              for( int j = 0; j < pMap->nChildren; j++ ) {
+                CypherAst *pPair = pMap->apChildren[j];
+                if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+
+                const char *zKey = cypherAstGetValue(pPair);
+                if( !zKey ) continue;
+
+                /* Get value - should be a LITERAL or expression */
+                const char *zValue = NULL;
+                if( pPair->nChildren > 0 ) {
+                  zValue = cypherAstGetValue(pPair->apChildren[0]);
+                }
+
+                if( zValue ) {
+                  if( !first ) {
+                    char *zOld = zJson;
+                    zJson = sqlite3_mprintf("%s, ", zOld);
+                    sqlite3_free(zOld);
+                  }
+
+                  char *zOld = zJson;
+                  /* Quote string values, pass numbers as-is */
+                  if( zValue[0] == '\'' || zValue[0] == '"' ) {
+                    /* Remove quotes and add proper JSON quotes */
+                    int len = strlen(zValue);
+                    char *zUnquoted = sqlite3_mprintf("%.*s", len - 2, zValue + 1);
+                    zJson = sqlite3_mprintf("%s\"%s\": \"%s\"", zOld, zKey, zUnquoted);
+                    sqlite3_free(zUnquoted);
+                  } else {
+                    /* Numeric value */
+                    zJson = sqlite3_mprintf("%s\"%s\": %s", zOld, zKey, zValue);
+                  }
+                  sqlite3_free(zOld);
+                  first = 0;
+                }
+              }
+
+              char *zOld = zJson;
+              zJson = sqlite3_mprintf("%s}", zOld);
+              sqlite3_free(zOld);
+
+              logicalPlanNodeSetProperty(pLogical, zJson);
+              sqlite3_free(zJson);
+              break;
+            }
+          }
+          }  /* Close NODE_PATTERN if */
+        }    /* Close nChildren > 0 if */
+      }      /* Close pLogical if */
+      break;
+
+    case CYPHER_AST_MERGE:
+      /* MERGE clause becomes a merge operation */
+      pLogical = logicalPlanNodeCreate(LOGICAL_MERGE);
+      if( pLogical && pAst->nChildren > 0 ) {
+        /* Process pattern to merge */
+        pChild = compileAstNode(pAst->apChildren[0], pContext);
+        if( pChild ) {
+          logicalPlanNodeAddChild(pLogical, pChild);
+        }
+      }
+      break;
+
+    case CYPHER_AST_SET:
+      /* SET clause becomes a set operation */
+      pLogical = logicalPlanNodeCreate(LOGICAL_SET);
+      if( pLogical && pAst->nChildren > 0 ) {
+        /* Process SET items - property assignments */
+        for( i = 0; i < pAst->nChildren; i++ ) {
+          pChild = compileAstNode(pAst->apChildren[i], pContext);
+          if( pChild ) {
+            logicalPlanNodeAddChild(pLogical, pChild);
+          }
+        }
+      }
+      break;
+
+    case CYPHER_AST_DELETE:
+      /* DELETE clause becomes a delete operation */
+      pLogical = logicalPlanNodeCreate(LOGICAL_DELETE);
+      if( pLogical && pAst->nChildren > 0 ) {
+        /* Process expressions to delete - typically identifiers or patterns */
+        for( i = 0; i < pAst->nChildren; i++ ) {
+          if( cypherAstIsType(pAst->apChildren[i], CYPHER_AST_IDENTIFIER) ) {
+            const char *zVar = cypherAstGetValue(pAst->apChildren[i]);
+            if( zVar ) {
+              logicalPlanNodeSetAlias(pLogical, zVar);
+            }
+          }
+        }
+      }
+      break;
+
+    case CYPHER_AST_REMOVE:
+      /* REMOVE clause - typically for removing labels or properties */
+      /* For now, treat similar to SET but with removal semantics */
+      pLogical = logicalPlanNodeCreate(LOGICAL_SET);  /* Reuse SET for now */
+      if( pLogical && pAst->nChildren > 0 ) {
+        pLogical->iFlags |= 0x02; /* REMOVE flag */
+        for( i = 0; i < pAst->nChildren; i++ ) {
+          pChild = compileAstNode(pAst->apChildren[i], pContext);
+          if( pChild ) {
+            logicalPlanNodeAddChild(pLogical, pChild);
+          }
+        }
+      }
+      break;
+
     default:
       /* Unsupported AST node type */
       pContext->zErrorMsg = sqlite3_mprintf("Unsupported AST node type: %d", pAst->type);
@@ -282,6 +599,42 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       break;
   }
   
+  return pLogical;
+}
+
+/*
+** Compile expression AST nodes into logical plan fragments.
+** This handles IDENTIFIER, LITERAL, and PROPERTY nodes that may appear
+** as standalone expressions or within larger expression trees.
+*/
+static LogicalPlanNode *compileExpression(CypherAst *pAst, PlanContext *pContext) {
+  LogicalPlanNode *pLogical = NULL;
+
+  if( !pAst ) return NULL;
+
+  switch( pAst->type ) {
+    case CYPHER_AST_IDENTIFIER:
+      /* Identifier references a variable - create a placeholder that can be resolved later */
+      /* For now, return NULL as identifiers are typically handled in their parent context */
+      break;
+
+    case CYPHER_AST_LITERAL:
+      /* Literal value - return NULL as literals are handled in context */
+      /* The value can be accessed via cypherAstGetValue(pAst) */
+      break;
+
+    case CYPHER_AST_PROPERTY:
+      /* Property access: obj.property */
+      /* Return NULL - properties are handled by parent filter/projection nodes */
+      /* The parent can access this via pAst->apChildren[0] (object) and pAst->apChildren[1] (property) */
+      break;
+
+    default:
+      /* For other expression types, try compiling as a full node */
+      pLogical = compileAstNode(pAst, pContext);
+      break;
+  }
+
   return pLogical;
 }
 

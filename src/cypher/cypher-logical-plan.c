@@ -1,19 +1,4 @@
-/*
-** SQLite Graph Database Extension - Logical Plan Implementation
-**
-** This file implements the logical query plan data structures and
-** compilation functions for converting Cypher ASTs into optimized
-** logical execution plans.
-**
-** Features:
-** - Logical plan node creation and management
-** - AST to logical plan compilation
-** - Basic cost estimation and optimization
-** - Pattern recognition and transformation
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes
-*/
+/* Logical query plan - AST compilation and optimization */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE
@@ -391,7 +376,18 @@ char *logicalPlanToString(LogicalPlanNode *pNode) {
   }
   
   /* Build node string */
-  if( pNode->zAlias ) {
+  if( pNode->zAlias && pNode->zLabel ) {
+    /* Both alias and label */
+    zResult = sqlite3_mprintf("%s(%s:%s cost=%.1f rows=%lld%s%s)",
+                             logicalPlanNodeTypeName(pNode->type),
+                             pNode->zAlias,
+                             pNode->zLabel,
+                             pNode->rEstimatedCost,
+                             pNode->iEstimatedRows,
+                             zChildren ? " [" : "",
+                             zChildren ? zChildren : "");
+  } else if( pNode->zAlias ) {
+    /* Just alias */
     zResult = sqlite3_mprintf("%s(%s cost=%.1f rows=%lld%s%s)",
                              logicalPlanNodeTypeName(pNode->type),
                              pNode->zAlias,
@@ -400,6 +396,7 @@ char *logicalPlanToString(LogicalPlanNode *pNode) {
                              zChildren ? " [" : "",
                              zChildren ? zChildren : "");
   } else if( pNode->zLabel ) {
+    /* Just label */
     zResult = sqlite3_mprintf("%s(:%s cost=%.1f rows=%lld%s%s)",
                              logicalPlanNodeTypeName(pNode->type),
                              pNode->zLabel,
@@ -408,6 +405,7 @@ char *logicalPlanToString(LogicalPlanNode *pNode) {
                              zChildren ? " [" : "",
                              zChildren ? zChildren : "");
   } else {
+    /* Neither */
     zResult = sqlite3_mprintf("%s(cost=%.1f rows=%lld%s%s)",
                              logicalPlanNodeTypeName(pNode->type),
                              pNode->rEstimatedCost,

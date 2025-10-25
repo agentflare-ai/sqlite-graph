@@ -1,19 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher SQL Functions
-**
-** This file implements SQL functions that expose Cypher parser and query
-** execution capabilities to SQLite users. These functions allow users to
-** execute Cypher queries through SQL function calls.
-**
-** Functions provided:
-** - cypher_parse(query_text) - Parse Cypher query and return AST
-** - cypher_validate(query_text) - Validate Cypher query syntax
-** - cypher_execute(query_text) - Execute Cypher query (Phase 7+)
-** - cypher_explain(query_text) - Show query execution plan (Phase 7+)
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes or NULL on error
-*/
+/* SQL functions for Cypher parsing, validation, and execution */
 
 #include "sqlite3ext.h"
 #include "cypher-parser.h"

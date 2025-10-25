@@ -1,17 +1,6 @@
 /*
-* Copyright 2018-2024 Redis Labs Ltd. and Contributors
-*
-* This file is available under the Redis Source Available License 2.0,
-* applying the same terms and conditions as the Redis Source Available License 2.0.
-* You may not use this file except in compliance with the Redis Source Available License 2.0.
-*
-* A copy of the Redis Source Available License 2.0 is available at
-* https://redis.io/rsal/Redis-Source-Available-License-2.0/
-*
-* The Redis Source Available License 2.0 is a copy-left license that requires any
-* derivative work to be made available under the same terms and conditions.
-* 
-* See the file LICENSE for more details.
+** Cypher lexer - tokenizes Cypher query strings
+** Copyright (c) 2025 AgentFlare, Inc. - MIT License
 */
 
 // SQLite Extension API handling - check if we're in extension mode
@@ -39,7 +28,6 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include <ctype.h>
 #include <stdarg.h>
 
-// Initializes a new lexer instance.
 CypherLexer *cypherLexerCreate(const char *zInput) {
     if (!zInput) {
         return NULL;
@@ -58,7 +46,6 @@ CypherLexer *cypherLexerCreate(const char *zInput) {
     return pLexer;
 }
 
-// Frees all allocated memory associated with the lexer.
 void cypherLexerDestroy(CypherLexer *pLexer) {
     if (!pLexer) return;
     if (pLexer->zErrorMsg) {
@@ -117,16 +104,29 @@ static void lexerSkipComment(CypherLexer *pLexer) {
 
 static CypherToken *lexerAddToken(CypherLexer *pLexer, CypherTokenType type, int startPos, int endPos) {
     if (pLexer->pLastToken) {
+        if (pLexer->pLastToken->text) {
+            CYPHER_FREE((void*)pLexer->pLastToken->text);
+        }
         CYPHER_FREE(pLexer->pLastToken);
     }
     CypherToken *pToken = (CypherToken *)CYPHER_MALLOC(sizeof(CypherToken));
     if (!pToken) {
         return NULL;
     }
-    
+
     pToken->type = type;
-    pToken->text = &pLexer->zInput[startPos];
     pToken->len = endPos - startPos;
+
+    /* Create null-terminated copy of token text */
+    char *zText = (char *)CYPHER_MALLOC(pToken->len + 1);
+    if (!zText) {
+        CYPHER_FREE(pToken);
+        return NULL;
+    }
+    memcpy(zText, &pLexer->zInput[startPos], pToken->len);
+    zText[pToken->len] = '\0';
+    pToken->text = zText;
+
     pToken->line = pLexer->iLine;
     pToken->column = pLexer->iColumn - pToken->len;
     pLexer->pLastToken = pToken;

@@ -1,18 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher Executor SQL Functions
-**
-** This file implements SQL functions that expose Cypher query execution
-** capabilities to SQLite users. These functions allow users to execute
-** Cypher queries and get results back as JSON.
-**
-** Functions provided:
-** - cypher_execute(query_text) - Execute Cypher query and return results
-** - cypher_execute_explain(query_text) - Execute with detailed execution stats
-** - cypher_test_execute() - Execute test queries for demonstration
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes or NULL on error
-*/
+/* SQL functions for executing Cypher queries and returning JSON results */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE
@@ -20,8 +6,12 @@ extern const sqlite3_api_routines *sqlite3_api;
 #endif
 /* SQLITE_EXTENSION_INIT1 - removed to prevent multiple definition */
 #include "cypher-executor.h"
+#include "graph.h"  /* For GraphVtab and extern pGraph */
 #include <string.h>
 #include <assert.h>
+
+/* External reference to global graph virtual table */
+extern GraphVtab *pGraph;
 
 /*
 ** SQL function: cypher_execute(query_text)
@@ -81,13 +71,13 @@ static void cypherExecuteSqlFunc(
   }
   
   /* Plan the query */
-  pPlanner = cypherPlannerCreate(sqlite3_context_db_handle(context), NULL);
+  pPlanner = cypherPlannerCreate(sqlite3_context_db_handle(context), pGraph);
   if( !pPlanner ) {
     sqlite3_result_error_nomem(context);
     cypherParserDestroy(pParser);
     return;
   }
-  
+
   rc = cypherPlannerCompile(pPlanner, pAst);
   if( rc != SQLITE_OK ) {
     const char *zError = cypherPlannerGetError(pPlanner);
@@ -96,7 +86,7 @@ static void cypherExecuteSqlFunc(
     cypherParserDestroy(pParser);
     return;
   }
-  
+
   rc = cypherPlannerOptimize(pPlanner);
   if( rc != SQLITE_OK ) {
     const char *zError = cypherPlannerGetError(pPlanner);
@@ -105,7 +95,7 @@ static void cypherExecuteSqlFunc(
     cypherParserDestroy(pParser);
     return;
   }
-  
+
   pPlan = cypherPlannerGetPlan(pPlanner);
   if( !pPlan ) {
     sqlite3_result_error(context, "No execution plan generated", -1);
@@ -113,9 +103,9 @@ static void cypherExecuteSqlFunc(
     cypherParserDestroy(pParser);
     return;
   }
-  
+
   /* Execute the query */
-  pExecutor = cypherExecutorCreate(sqlite3_context_db_handle(context), NULL);
+  pExecutor = cypherExecutorCreate(sqlite3_context_db_handle(context), pGraph);
   if( !pExecutor ) {
     sqlite3_result_error_nomem(context);
     cypherPlannerDestroy(pPlanner);

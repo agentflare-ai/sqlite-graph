@@ -1,14 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher Write Operations Implementation
-**
-** This file implements the core write operations for Cypher: CREATE, MERGE,
-** SET, DELETE, and DETACH DELETE. Includes transaction management and
-** rollback support using SQLite transaction semantics.
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes (SQLITE_OK, etc.)
-** Transaction safety: All operations integrate with SQLite transactions
-*/
+/* Cypher write operations - CREATE, MERGE, SET, DELETE */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE
@@ -1071,8 +1061,9 @@ int cypherNodeMatches(CypherWriteContext *pCtx, sqlite3_int64 iNodeId,
             "SELECT 1 FROM graph_nodes WHERE node_id = %lld", iNodeId);
         
         for (i = 0; i < nLabels; i++) {
+            /* Use %q to properly escape the label for SQL LIKE pattern */
             char *zNewSql = sqlite3_mprintf(
-                "%s AND json_extract(labels, '$') LIKE '%%\"%s\"%%'",
+                "%s AND json_extract(labels, '$') LIKE '%%\"%q\"%%'",
                 zSql, azLabels[i]);
             sqlite3_free(zSql);
             zSql = zNewSql;
@@ -2330,19 +2321,20 @@ int cypherDelete(CypherWriteContext *pCtx, DeleteOp *pOp) {
                     if (zStart && zEnd) {
                         zStart++; /* Skip '[' */
                         *zEnd = '\0'; /* Terminate at ']' */
-                        
-                        /* Parse comma-separated IDs */
-                        char *zToken = strtok(zStart, ",");
+
+                        /* Parse comma-separated IDs (thread-safe version) */
+                        char *saveptr = NULL;
+                        char *zToken = strtok_r(zStart, ",", &saveptr);
                         while (zToken) {
                             /* Remove whitespace */
                             while (*zToken == ' ' || *zToken == '\t') zToken++;
-                            
+
                             sqlite3_int64 iRelId = atoll(zToken);
                             if (iRelId > 0) {
                                 cypherStorageDeleteEdge(pCtx->pGraph, iRelId);
                             }
-                            
-                            zToken = strtok(NULL, ",");
+
+                            zToken = strtok_r(NULL, ",", &saveptr);
                         }
                     }
                     sqlite3_free(zCopy);

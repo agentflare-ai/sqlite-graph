@@ -144,6 +144,7 @@ const char *cypherAstNodeTypeName(CypherAstNodeType type) {
     case CYPHER_AST_CASE:            return "CASE";
     case CYPHER_AST_PROPERTY_PAIR:   return "PROPERTY_PAIR";
     case CYPHER_AST_AND:             return "AND";
+    case CYPHER_AST_OR:              return "OR";
     case CYPHER_AST_NOT:             return "NOT";
     case CYPHER_AST_COMPARISON:      return "COMPARISON";
     case CYPHER_AST_ADDITIVE:        return "ADDITIVE";
@@ -154,6 +155,11 @@ const char *cypherAstNodeTypeName(CypherAstNodeType type) {
     case CYPHER_AST_ENDS_WITH:       return "ENDS_WITH";
     case CYPHER_AST_CONTAINS_OP:     return "CONTAINS_OP";
     case CYPHER_AST_REGEX:           return "REGEX";
+    case CYPHER_AST_CREATE:          return "CREATE";
+    case CYPHER_AST_MERGE:           return "MERGE";
+    case CYPHER_AST_SET:             return "SET";
+    case CYPHER_AST_DELETE:          return "DELETE";
+    case CYPHER_AST_REMOVE:          return "REMOVE";
     case CYPHER_AST_COUNT:           return "COUNT";
     default:                         return "UNKNOWN";
   }
@@ -267,14 +273,15 @@ const char *cypherAstGetValue(CypherAst *pAst) {
   return pAst ? pAst->zValue : NULL;
 }
 
-// Helper for printing with indentation
+#ifdef CYPHER_AST_DEBUG
+// Helper for printing with indentation (debug builds only)
 static void cypherAstPrintIndent(int iIndent) {
     for (int i = 0; i < iIndent; i++) {
         printf("  ");
     }
 }
 
-// Print the AST for debugging.
+// Print the AST for debugging (debug builds only)
 void cypherAstPrint(CypherAst *pNode, int iIndent) {
     if (!pNode) return;
 
@@ -289,3 +296,11 @@ void cypherAstPrint(CypherAst *pNode, int iIndent) {
         cypherAstPrint(pNode->apChildren[i], iIndent + 1);
     }
 }
+#else
+// Stub for production builds
+void cypherAstPrint(CypherAst *pNode, int iIndent) {
+    (void)pNode;
+    (void)iIndent;
+    /* Debug printing disabled in production builds */
+}
+#endif

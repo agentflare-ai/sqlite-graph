@@ -1,19 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher Planner SQL Functions
-**
-** This file implements SQL functions that expose Cypher query planning
-** capabilities to SQLite users. These functions allow users to analyze
-** query plans, understand optimization decisions, and debug performance.
-**
-** Functions provided:
-** - cypher_plan(query_text) - Generate and return execution plan
-** - cypher_explain(query_text) - Detailed plan analysis with costs
-** - cypher_logical_plan(query_text) - Show logical plan structure
-** - cypher_optimize(query_text) - Show optimization decisions
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes or NULL on error
-*/
+/* SQL functions for Cypher query plan inspection and debugging */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE

@@ -1,20 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher JSON Processing
-**
-** This file implements JSON property parsing and serialization for
-** the Cypher execution engine. Handles conversion between JSON
-** strings and CypherValue structures.
-**
-** Features:
-** - JSON string parsing to CypherValue maps and lists
-** - CypherValue serialization to JSON format
-** - Proper escape handling for strings
-** - Memory management using sqlite3_malloc/free
-** - Error handling with meaningful error codes
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes
-*/
+/* JSON parsing and serialization for Cypher values */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE

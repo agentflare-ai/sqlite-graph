@@ -1,20 +1,4 @@
-/*
-** SQLite Graph Database Extension - Schema Management
-**
-** This file implements schema management and indexing for the SQLite graph
-** database extension. It provides label and relationship type support for
-** Cypher compatibility.
-**
-** Key features:
-** - Label-based node indexing with hash tables
-** - Relationship type tracking and indexing
-** - Dynamic schema discovery and validation
-** - Property schema inference for optimization
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes (SQLITE_OK, etc.)
-** Thread safety: Extension supports SQLite threading modes
-*/
+/* Schema management - label indexing and relationship type tracking */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE

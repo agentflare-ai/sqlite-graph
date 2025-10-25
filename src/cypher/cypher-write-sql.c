@@ -1,14 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher Write Operations SQL Functions
-**
-** This file implements SQL functions that expose Cypher write operations
-** to SQLite users. Includes CREATE, MERGE, SET, DELETE functions that
-** can be called directly from SQL.
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes and set result errors
-** Transaction safety: All operations respect SQLite transaction boundaries
-*/
+/* SQL functions for Cypher write operations (CREATE, MERGE, SET, DELETE) */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE

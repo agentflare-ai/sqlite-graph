@@ -1,19 +1,4 @@
-/*
-** SQLite Graph Database Extension - Execution Context Implementation
-**
-** This file implements the execution context and value management for
-** the Cypher execution engine. The context manages variable bindings,
-** memory allocation, and execution state during query execution.
-**
-** Features:
-** - Variable binding and lookup
-** - Memory management for execution
-** - Value creation and manipulation
-** - Result row management
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes
-*/
+/* Execution context - manages variables, values, and result rows */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE
@@ -459,10 +444,18 @@ int cypherResultAddColumn(CypherResult *pResult, const char *zName, CypherValue 
   /* Add column */
   pResult->azColumnNames[pResult->nColumns] = sqlite3_mprintf("%s", zName);
   if( !pResult->azColumnNames[pResult->nColumns] ) return SQLITE_NOMEM;
-  
-  pResult->aValues[pResult->nColumns] = *cypherValueCopy(pValue);
+
+  CypherValue *pCopy = cypherValueCopy(pValue);
+  if( !pCopy ) {
+    sqlite3_free(pResult->azColumnNames[pResult->nColumns]);
+    pResult->azColumnNames[pResult->nColumns] = NULL;
+    return SQLITE_NOMEM;
+  }
+
+  pResult->aValues[pResult->nColumns] = *pCopy;
+  sqlite3_free(pCopy);  /* Free the wrapper, value was copied by value */
   pResult->nColumns++;
-  
+
   return SQLITE_OK;
 }
 

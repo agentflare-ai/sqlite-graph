@@ -44,6 +44,10 @@ extern const sqlite3_api_routines *sqlite3_api;
 static CypherAst *parseQuery(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseSingleQuery(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseMatchClause(CypherLexer *pLexer, CypherParser *pParser);
+static CypherAst *parseCreateClause(CypherLexer *pLexer, CypherParser *pParser);
+static CypherAst *parseMergeClause(CypherLexer *pLexer, CypherParser *pParser);
+static CypherAst *parseSetClause(CypherLexer *pLexer, CypherParser *pParser);
+static CypherAst *parseDeleteClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parsePatternList(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseNodePattern(CypherLexer *pLexer, CypherParser *pParser);
@@ -76,23 +80,28 @@ static CypherAst *parseLiteral(CypherLexer *pLexer, CypherParser *pParser);
 
 
 
+/* Static storage for peeked token to avoid returning pointer to reused memory */
+static CypherToken s_peekedToken;
+
 static CypherToken *parserPeekToken(CypherLexer *pLexer) {
-    // This is a bit of a hack, as the lexer doesn't have a peek function.
-    // We can achieve the same effect by getting the next token and then
-    // rewinding the lexer's position.
+    // The lexer reuses a single token structure, so we need to copy it
+    // to avoid returning a pointer to memory that will be overwritten.
     int pos = pLexer->iPos;
     int line = pLexer->iLine;
     int col = pLexer->iColumn;
     CypherToken *token = cypherLexerNextToken(pLexer);
+    if (token) {
+        /* Copy token contents to static storage */
+        s_peekedToken = *token;
+    }
     pLexer->iPos = pos;
     pLexer->iLine = line;
     pLexer->iColumn = col;
-    return token;
+    return token ? &s_peekedToken : NULL;
 }
 
 static CypherToken *parserConsumeToken(CypherLexer *pLexer, CypherTokenType expectedType) {
     CypherToken *token = cypherLexerNextToken(pLexer);
-    printf("Consumed token: type=%d, text='%.*s', line=%d, column=%d\n", token->type, token->len, token->text, token->line, token->column);
     if (token->type != expectedType) {
         return NULL;
     }
@@ -247,14 +256,35 @@ static CypherAst *parseQuery(CypherLexer *pLexer, CypherParser *pParser) {
 
 static CypherAst *parseSingleQuery(CypherLexer *pLexer, CypherParser *pParser) {
     CypherAst *pSingleQuery = cypherAstCreate(CYPHER_AST_SINGLE_QUERY, 0, 0);
-    CypherAst *pMatchClause = parseMatchClause(pLexer, pParser);
-    if (!pMatchClause) {
+    CypherAst *pClause = NULL;
+
+    /* Parse the first clause - can be MATCH, CREATE, MERGE, SET, or DELETE */
+    CypherToken *pPeek = parserPeekToken(pLexer);
+
+    if (pPeek->type == CYPHER_TOK_MATCH) {
+        pClause = parseMatchClause(pLexer, pParser);
+    } else if (pPeek->type == CYPHER_TOK_CREATE) {
+        pClause = parseCreateClause(pLexer, pParser);
+    } else if (pPeek->type == CYPHER_TOK_MERGE) {
+        pClause = parseMergeClause(pLexer, pParser);
+    } else if (pPeek->type == CYPHER_TOK_SET) {
+        pClause = parseSetClause(pLexer, pParser);
+    } else if (pPeek->type == CYPHER_TOK_DELETE) {
+        pClause = parseDeleteClause(pLexer, pParser);
+    } else {
+        parserSetError(pParser, pLexer, "Expected MATCH, CREATE, MERGE, SET, or DELETE");
         cypherAstDestroy(pSingleQuery);
         return NULL;
     }
-    cypherAstAddChild(pSingleQuery, pMatchClause);
 
-    CypherToken *pPeek = parserPeekToken(pLexer);
+    if (!pClause) {
+        cypherAstDestroy(pSingleQuery);
+        return NULL;
+    }
+    cypherAstAddChild(pSingleQuery, pClause);
+
+    /* Parse optional WHERE clause (only valid after MATCH) */
+    pPeek = parserPeekToken(pLexer);
     if (pPeek->type == CYPHER_TOK_WHERE) {
         CypherAst *pWhereClause = parseWhereClause(pLexer, pParser);
         if (pWhereClause) {
@@ -262,6 +292,7 @@ static CypherAst *parseSingleQuery(CypherLexer *pLexer, CypherParser *pParser) {
         }
     }
 
+    /* Parse optional RETURN clause */
     pPeek = parserPeekToken(pLexer);
     if (pPeek->type == CYPHER_TOK_RETURN) {
         CypherAst *pReturnClause = parseReturnClause(pLexer, pParser);
@@ -272,7 +303,7 @@ static CypherAst *parseSingleQuery(CypherLexer *pLexer, CypherParser *pParser) {
         cypherAstAddChild(pSingleQuery, pReturnClause);
     }
 
-    // Consume tokens until EOF
+    /* Consume tokens until EOF */
     CypherToken *token;
     do {
         token = cypherLexerNextToken(pLexer);
@@ -300,6 +331,71 @@ static CypherAst *parseMatchClause(CypherLexer *pLexer, CypherParser *pParser) {
     }
     cypherAstAddChild(pMatchClause, pPatternList);
     return pMatchClause;
+}
+
+static CypherAst *parseCreateClause(CypherLexer *pLexer, CypherParser *pParser) {
+    if (!parserConsumeToken(pLexer, CYPHER_TOK_CREATE)) {
+        parserSetError(pParser, pLexer, "Expected CREATE");
+        return NULL;
+    }
+    CypherAst *pCreateClause = cypherAstCreate(CYPHER_AST_CREATE, 0, 0);
+    CypherAst *pPatternList = parsePatternList(pLexer, pParser);
+    if (!pPatternList) {
+        cypherAstDestroy(pCreateClause);
+        return NULL;
+    }
+    cypherAstAddChild(pCreateClause, pPatternList);
+    return pCreateClause;
+}
+
+static CypherAst *parseMergeClause(CypherLexer *pLexer, CypherParser *pParser) {
+    if (!parserConsumeToken(pLexer, CYPHER_TOK_MERGE)) {
+        parserSetError(pParser, pLexer, "Expected MERGE");
+        return NULL;
+    }
+    CypherAst *pMergeClause = cypherAstCreate(CYPHER_AST_MERGE, 0, 0);
+    CypherAst *pPatternList = parsePatternList(pLexer, pParser);
+    if (!pPatternList) {
+        cypherAstDestroy(pMergeClause);
+        return NULL;
+    }
+    cypherAstAddChild(pMergeClause, pPatternList);
+    return pMergeClause;
+}
+
+static CypherAst *parseSetClause(CypherLexer *pLexer, CypherParser *pParser) {
+    if (!parserConsumeToken(pLexer, CYPHER_TOK_SET)) {
+        parserSetError(pParser, pLexer, "Expected SET");
+        return NULL;
+    }
+    CypherAst *pSetClause = cypherAstCreate(CYPHER_AST_SET, 0, 0);
+
+    /* Parse SET items: variable.property = value */
+    /* For now, parse as expression - full implementation would parse property assignments */
+    CypherAst *pExpr = parseExpression(pLexer, pParser);
+    if (!pExpr) {
+        cypherAstDestroy(pSetClause);
+        return NULL;
+    }
+    cypherAstAddChild(pSetClause, pExpr);
+    return pSetClause;
+}
+
+static CypherAst *parseDeleteClause(CypherLexer *pLexer, CypherParser *pParser) {
+    if (!parserConsumeToken(pLexer, CYPHER_TOK_DELETE)) {
+        parserSetError(pParser, pLexer, "Expected DELETE");
+        return NULL;
+    }
+    CypherAst *pDeleteClause = cypherAstCreate(CYPHER_AST_DELETE, 0, 0);
+
+    /* Parse identifiers or expressions to delete */
+    CypherAst *pExpr = parseExpression(pLexer, pParser);
+    if (!pExpr) {
+        cypherAstDestroy(pDeleteClause);
+        return NULL;
+    }
+    cypherAstAddChild(pDeleteClause, pExpr);
+    return pDeleteClause;
 }
 
 static CypherAst *parsePatternList(CypherLexer *pLexer, CypherParser *pParser) {
@@ -338,6 +434,9 @@ static CypherAst *parseNodePattern(CypherLexer *pLexer, CypherParser *pParser) {
     CypherAst *pLabels = parseNodeLabels(pLexer, pParser);
     if (pLabels) {
         cypherAstAddChild(pNodePattern, pLabels);
+    } else if (pParser->zErrorMsg) {
+        cypherAstDestroy(pNodePattern);
+        return NULL;
     }
 
     // Check for property map
@@ -359,7 +458,7 @@ static CypherAst *parseNodePattern(CypherLexer *pLexer, CypherParser *pParser) {
 
 static CypherAst *parseNodeLabels(CypherLexer *pLexer, CypherParser *pParser) {
     CypherToken *pColon = parserPeekToken(pLexer);
-    if (pColon->type != CYPHER_TOK_COLON) {
+    if (!pColon || pColon->type != CYPHER_TOK_COLON) {
         return NULL;
     }
     parserConsumeToken(pLexer, CYPHER_TOK_COLON);
@@ -369,7 +468,17 @@ static CypherAst *parseNodeLabels(CypherLexer *pLexer, CypherParser *pParser) {
         parserSetError(pParser, pLexer, "Expected node label after ':'");
         return NULL;
     }
-    return cypherAstCreateNodeLabel(pLabel->text, pLabel->line, pLabel->column);
+
+    /* Create null-terminated copy of label text using token length */
+    char *zLabel = sqlite3_mprintf("%.*s", pLabel->len, pLabel->text);
+    if (!zLabel) {
+        parserSetError(pParser, pLexer, "Out of memory");
+        return NULL;
+    }
+
+    CypherAst *pAst = cypherAstCreateNodeLabel(zLabel, pLabel->line, pLabel->column);
+    sqlite3_free(zLabel);
+    return pAst;
 }
 
 static CypherAst *parsePropertyMap(CypherLexer *pLexer, CypherParser *pParser) {

@@ -1,21 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher Storage Bridge
-**
-** This file implements the bridge between Cypher operations and the
-** underlying graph storage system. It provides functions to add, update,
-** and delete nodes and relationships through the virtual table interface.
-**
-** Features:
-** - Node creation with labels and properties
-** - Relationship creation with type, weight, and properties
-** - Property updates for existing nodes and relationships
-** - Node deletion with optional DETACH behavior
-** - Transaction support for rollback operations
-** - JSON property serialization/deserialization
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes
-*/
+/* Storage bridge between Cypher operations and graph virtual table */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE

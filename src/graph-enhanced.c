@@ -1,20 +1,4 @@
-/*
-** SQLite Graph Database Extension - Enhanced Storage Functions
-**
-** This file implements enhanced storage functions with label and relationship
-** type support for Cypher compatibility. These functions extend the basic
-** graph storage with schema-aware operations.
-**
-** Key features:
-** - Node operations with multi-label support
-** - Edge operations with relationship types
-** - Label management (add, remove, query)
-** - Automatic schema registration and indexing
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes (SQLITE_OK, etc.)
-** Thread safety: Extension supports SQLite threading modes
-*/
+/* Enhanced storage with label and relationship type support */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE

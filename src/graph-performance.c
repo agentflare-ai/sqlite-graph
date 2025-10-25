@@ -101,7 +101,8 @@ SelectivityEstimate graphEstimateSelectivity(GraphVtab *pGraph,
     if (zLabel) {
         /* Estimate based on label index statistics */
         int labelCount = 0;
-        zSql = sqlite3_mprintf("SELECT count(*) FROM %s_nodes WHERE labels LIKE '%%\"%s\"%%'", pGraph->zTableName, zLabel);
+        /* Use %q to properly escape the label for SQL LIKE pattern */
+        zSql = sqlite3_mprintf("SELECT count(*) FROM %s_nodes WHERE labels LIKE '%%\"%q\"%%'", pGraph->zTableName, zLabel);
         rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, 0);
         sqlite3_free(zSql);
         if( rc==SQLITE_OK && sqlite3_step(pStmt)==SQLITE_ROW ){
@@ -392,15 +393,34 @@ CompositeIndex* graphCreateCompositeIndex(GraphVtab *pGraph,
     
     /* Initialize composite index with graph reference - implicit via context */
     (void)pGraph; /* Graph reference maintained through calling context */
-    
-    /* Build index name */
-    char name[256] = "idx_composite_";
+
+    /* Build index name - calculate required length first */
+    size_t nameLen = strlen("idx_composite_");
     for (int i = 0; i < nProperties; i++) {
-        if (i > 0) strcat(name, "_");
-        strcat(name, properties[i]);
+        if (i > 0) nameLen += 1; /* underscore */
+        nameLen += strlen(properties[i]);
     }
-    
-    index->indexName = sqlite3_mprintf("%s", name);
+
+    char *name = sqlite3_malloc(nameLen + 1);
+    if (!name) {
+        sqlite3_free(index);
+        return NULL;
+    }
+
+    size_t offset = 0;
+    memcpy(name, "idx_composite_", 14);
+    offset = 14;
+    for (int i = 0; i < nProperties; i++) {
+        if (i > 0) {
+            name[offset++] = '_';
+        }
+        size_t propLen = strlen(properties[i]);
+        memcpy(name + offset, properties[i], propLen);
+        offset += propLen;
+    }
+    name[offset] = '\0';
+
+    index->indexName = name;
     index->nProperties = nProperties;
     index->properties = sqlite3_malloc(nProperties * sizeof(char*));
     

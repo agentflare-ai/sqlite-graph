@@ -1,19 +1,4 @@
-/*
-** SQLite Graph Database Extension - Cypher Executor Implementation
-**
-** This file implements the main Cypher query executor that coordinates
-** the execution of physical plans using the Volcano iterator model.
-** The executor manages the execution pipeline from plan to results.
-**
-** Features:
-** - Physical plan execution coordination
-** - Iterator lifecycle management
-** - Result collection and formatting
-** - Error handling and cleanup
-**
-** Memory allocation: All functions use sqlite3_malloc()/sqlite3_free()
-** Error handling: Functions return SQLite error codes
-*/
+/* Cypher query executor - coordinates iterator execution and result collection */
 
 #include "sqlite3ext.h"
 #ifndef SQLITE_CORE
@@ -26,10 +11,6 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include <stdio.h>
 #include <time.h>
 
-/*
-** Create a new Cypher executor.
-** Returns NULL on allocation failure.
-*/
 CypherExecutor *cypherExecutorCreate(sqlite3 *pDb, GraphVtab *pGraph) {
   CypherExecutor *pExecutor;
   
@@ -50,10 +31,6 @@ CypherExecutor *cypherExecutorCreate(sqlite3 *pDb, GraphVtab *pGraph) {
   return pExecutor;
 }
 
-/*
-** Destroy a Cypher executor and free all associated memory.
-** Safe to call with NULL pointer.
-*/
 void cypherExecutorDestroy(CypherExecutor *pExecutor) {
   if( !pExecutor ) return;
   
@@ -63,10 +40,6 @@ void cypherExecutorDestroy(CypherExecutor *pExecutor) {
   sqlite3_free(pExecutor);
 }
 
-/*
-** Recursively create iterators from a physical plan tree.
-** Returns the root iterator, or NULL on error.
-*/
 static CypherIterator *createIteratorTree(PhysicalPlanNode *pPlan, ExecutionContext *pContext) {
   CypherIterator *pIterator;
   CypherIterator *pChild;
@@ -103,10 +76,6 @@ static CypherIterator *createIteratorTree(PhysicalPlanNode *pPlan, ExecutionCont
   return pIterator;
 }
 
-/*
-** Prepare an executor with a physical execution plan.
-** Returns SQLITE_OK on success, error code on failure.
-*/
 int cypherExecutorPrepare(CypherExecutor *pExecutor, PhysicalPlanNode *pPlan) {
   if( !pExecutor || !pPlan ) return SQLITE_MISUSE;
   
@@ -127,11 +96,7 @@ int cypherExecutorPrepare(CypherExecutor *pExecutor, PhysicalPlanNode *pPlan) {
   return SQLITE_OK;
 }
 
-/*
-** Execute the prepared query and collect all results.
-** Returns SQLITE_OK on success, error code on failure.
-** Results are returned as a JSON array string.
-*/
+/* Execute query and collect results as JSON array */
 int cypherExecutorExecute(CypherExecutor *pExecutor, char **pzResults) {
   CypherIterator *pRoot;
   char *zResultArray = NULL;
@@ -168,7 +133,7 @@ int cypherExecutorExecute(CypherExecutor *pExecutor, char **pzResults) {
       rc = SQLITE_NOMEM;
       break;
     }
-    
+
     /* Get next result row */
     rc = pRoot->xNext(pRoot, pResult);
     if( rc == SQLITE_DONE ) {
@@ -180,11 +145,11 @@ int cypherExecutorExecute(CypherExecutor *pExecutor, char **pzResults) {
       pExecutor->zErrorMsg = sqlite3_mprintf("Iterator error: %d", rc);
       break;
     }
-    
+
     /* Convert result to JSON */
     char *zRowJson = cypherResultToJson(pResult);
     cypherResultDestroy(pResult);
-    
+
     if( !zRowJson ) {
       rc = SQLITE_NOMEM;
       break;
@@ -213,9 +178,8 @@ int cypherExecutorExecute(CypherExecutor *pExecutor, char **pzResults) {
     }
     memcpy(zResultArray + nUsed, zRowJson, nRowLen);
     nUsed += nRowLen;
-    
+
     sqlite3_free(zRowJson);
-        sqlite3_free(zResultArray);
     nResults++;
     
     /* Sanity check to prevent infinite loops */
