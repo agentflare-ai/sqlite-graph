@@ -1,0 +1,139 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the information below to help us investigate.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched existing issues to ensure this bug hasn't been reported
+          required: true
+        - label: I have read the documentation
+          required: true
+        - label: I am using a supported platform (Linux x86_64)
+          required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What version of sqlite-graph are you using?
+      placeholder: "v0.1.0-alpha"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which platform are you running on?
+      options:
+        - Ubuntu 20.04
+        - Ubuntu 22.04
+        - Ubuntu 24.04
+        - Debian 11
+        - Debian 12
+        - Other Linux (specify below)
+        - macOS
+        - Windows
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of the bug
+      placeholder: What happened? What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps to reproduce the behavior
+      placeholder: |
+        1. Load extension with '...'
+        2. Execute query '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Code Sample
+      description: Minimal code sample that demonstrates the issue
+      render: python
+      placeholder: |
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.enable_load_extension(True)
+        conn.load_extension("./libgraph.so")
+        # ... code that triggers the bug
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error Message / Stack Trace
+      description: Full error message or stack trace if applicable
+      render: shell
+      placeholder: Paste error message here
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Details
+      description: Additional environment information
+      placeholder: |
+        - SQLite version: 3.x.x
+        - Python version: 3.x
+        - GCC version: x.x
+        - Architecture: x86_64
+        - Memory: 8GB
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any additional information that might help us diagnose the issue
+      placeholder: |
+        - Does this happen consistently or intermittently?
+        - Did this work in a previous version?
+        - Any workarounds you've found?
+
+  - type: checkboxes
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - label: This is a critical bug (crashes, data loss)
+        - label: This is a major bug (significant functionality broken)
+        - label: This is a minor bug (minor functionality affected)
+        - label: This is a cosmetic issue

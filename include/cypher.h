@@ -160,6 +160,7 @@ typedef enum {
     
     // Expression AST node types
     CYPHER_AST_AND,
+    CYPHER_AST_OR,
     CYPHER_AST_NOT,
     CYPHER_AST_COMPARISON,
     CYPHER_AST_ADDITIVE,
@@ -174,7 +175,14 @@ typedef enum {
     CYPHER_AST_ENDS_WITH,
     CYPHER_AST_CONTAINS_OP,
     CYPHER_AST_REGEX,
-    
+
+    // Mutation clauses
+    CYPHER_AST_CREATE,
+    CYPHER_AST_MERGE,
+    CYPHER_AST_SET,
+    CYPHER_AST_DELETE,
+    CYPHER_AST_REMOVE,
+
     CYPHER_AST_COUNT // Sentinel for max AST node type
 } CypherAstNodeType;
 

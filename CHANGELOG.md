@@ -7,12 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Initial release preparation
-- Comprehensive documentation suite
-- Project cleanup and organization
+### Planned for v0.2.0
+- macOS and Windows platform support
+- Performance optimizations for large graphs
+- Additional graph algorithms
 
-## [1.0.0] - 2024-01-XX
+## [0.1.0-alpha.0] - 2025-10-24
+
+**ALPHA RELEASE DISCLAIMER**: This is an alpha release intended for early testing and feedback. The API may change in future releases. Use in production environments is not recommended at this time.
 
 ### Added
 - **Core Graph Database Engine**

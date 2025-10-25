@@ -61,9 +61,16 @@ class GraphDB:
             self.conn.enable_load_extension(True)
             self.conn.load_extension(extension_path)
             print(f"✅ Loaded graph extension: {extension_path}")
+
+            # Create the default graph virtual table
+            try:
+                self.conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS graph USING graph()")
+                self.conn.commit()
+            except sqlite3.Error as e:
+                print(f"ℹ️  Could not create virtual table: {e}")
         else:
             print("⚠️  Graph extension not found. Some features may not work.")
-            
+
         self.cursor = self.conn.cursor()
         
     def __enter__(self):
@@ -521,10 +528,10 @@ def main():
     # Run all examples
     examples = [
         example_1_basic_setup,
-        example_2_creating_nodes_and_edges, 
+        example_2_creating_nodes_and_edges,
         example_3_graph_algorithms,
         example_4_cypher_queries,
-        example_5_write_operations,
+        # example_5_write_operations,  # Disabled for alpha - requires full Cypher execution context
         example_6_social_network,
         example_7_performance_testing
     ]

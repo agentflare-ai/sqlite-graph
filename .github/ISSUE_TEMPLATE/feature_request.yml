@@ -1,0 +1,106 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new feature! Please provide details below.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched existing issues to ensure this feature hasn't been requested
+          required: true
+        - label: I have read the documentation and roadmap
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve? What is the use case?
+      placeholder: I'm trying to do X, but I can't because Y...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe your proposed solution or feature
+      placeholder: I would like to be able to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative solutions or workarounds?
+      placeholder: |
+        - Alternative 1: ...
+        - Alternative 2: ...
+        - Current workaround: ...
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example Usage
+      description: Show how you would use this feature
+      render: python
+      placeholder: |
+        # Example of how the feature would be used
+        conn.execute("CYPHER 'NEW FEATURE SYNTAX'")
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature to you?
+      options:
+        - Critical - Blocking my use of the extension
+        - High - Would significantly improve my workflow
+        - Medium - Nice to have
+        - Low - Minor improvement
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Feature Category
+      description: Which area does this feature relate to?
+      options:
+        - Cypher Query Language
+        - Graph Algorithms
+        - Performance
+        - API / Interface
+        - Documentation
+        - Platform Support
+        - Developer Tools
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any additional information, screenshots, or references
+      placeholder: |
+        - Related to issue #...
+        - Similar feature in other graph databases: ...
+        - Performance considerations: ...
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to contribute this feature
+        - label: I would be willing to test this feature
+        - label: I can provide additional technical details

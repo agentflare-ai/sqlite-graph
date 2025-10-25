@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    name: Build and Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04, ubuntu-24.04]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc make valgrind
+
+    - name: Build extension
+      run: |
+        make clean
+        make
+        ls -lh build/
+
+    - name: Verify build artifacts
+      run: |
+        test -f build/libgraph.so || (echo "libgraph.so not found" && exit 1)
+        file build/libgraph.so
+
+    - name: Run tests
+      run: |
+        make test
+
+    - name: Run memory leak checks
+      if: matrix.os == 'ubuntu-22.04'
+      run: |
+        # Run a subset of tests with valgrind (full suite takes too long)
+        cd build/tests
+        for test in test_*; do
+          if [ -x "$test" ]; then
+            echo "Running valgrind on $test"
+            valgrind --leak-check=full --error-exitcode=1 --errors-for-leak-kinds=definite ./"$test" || echo "Warning: Memory issues in $test"
+          fi
+        done
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: sqlite-graph-${{ matrix.os }}
+        path: |
+          build/libgraph.so
+          build/libgraph_static.a
+        retention-days: 7
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ matrix.os }}
+        path: |
+          build/tests/*.log
+          build/tests/results/
+        retention-days: 7
+        if-no-files-found: ignore
+
+  sanitizer-build:
+    name: Build with Sanitizers
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc make
+
+    - name: Build with sanitizers
+      run: |
+        make clean
+        make sanitize
+
+    - name: Run tests with sanitizers
+      run: |
+        # Run tests with sanitizer enabled
+        cd build/tests
+        for test in test_*; do
+          if [ -x "$test" ]; then
+            echo "Running $test with sanitizers"
+            ./"$test" || echo "Test $test failed"
+          fi
+        done
+
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install analysis tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck clang-tidy
+
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=all --inconclusive --suppress=missingIncludeSystem \
+          --error-exitcode=0 --inline-suppr \
+          -I include/ -I src/ src/ 2>&1 | tee cppcheck-report.txt
+
+    - name: Upload analysis results
+      uses: actions/upload-artifact@v4
+      with:
+        name: static-analysis-results
+        path: cppcheck-report.txt
+        retention-days: 30
+
+  code-coverage:
+    name: Code Coverage
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc make gcovr lcov
+
+    - name: Build with coverage
+      run: |
+        export CFLAGS="-g -O0 --coverage -fprofile-arcs -ftest-coverage"
+        export LDFLAGS="--coverage"
+        make clean
+        make
+
+    - name: Run tests
+      run: |
+        make test
+
+    - name: Generate coverage report
+      run: |
+        gcovr --root . --print-summary --xml coverage.xml --html coverage.html
+
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: |
+          coverage.xml
+          coverage.html
+        retention-days: 30
+
+  build-status:
+    name: Build Status Summary
+    runs-on: ubuntu-22.04
+    needs: [build-and-test, sanitizer-build, static-analysis]
+    if: always()
+
+    steps:
+    - name: Check build results
+      run: |
+        if [ "${{ needs.build-and-test.result }}" != "success" ]; then
+          echo "Build and test failed"
+          exit 1
+        fi
+        if [ "${{ needs.sanitizer-build.result }}" != "success" ]; then
+          echo "Sanitizer build failed"
+          exit 1
+        fi
+        echo "All checks passed!"

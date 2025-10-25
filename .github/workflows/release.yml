@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build Release for ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-20.04
+            platform: linux-x86_64
+            arch: x86_64
+          - os: ubuntu-22.04
+            platform: linux-x86_64-u22
+            arch: x86_64
+          - os: ubuntu-24.04
+            platform: linux-x86_64-u24
+            arch: x86_64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc make
+
+    - name: Build extension (optimized)
+      run: |
+        export CFLAGS="-O3 -DNDEBUG -march=x86-64 -mtune=generic"
+        make clean
+        make
+
+    - name: Verify build
+      run: |
+        test -f build/libgraph.so || (echo "Build failed" && exit 1)
+        file build/libgraph.so
+        ls -lh build/
+
+    - name: Run smoke tests
+      run: |
+        make test
+
+    - name: Create release directory
+      run: |
+        mkdir -p release/${{ matrix.platform }}
+        cp build/libgraph.so release/${{ matrix.platform }}/
+        if [ -f build/libgraph_static.a ]; then
+          cp build/libgraph_static.a release/${{ matrix.platform }}/
+        fi
+
+    - name: Create installation instructions
+      run: |
+        cat > release/${{ matrix.platform }}/INSTALL.txt << 'EOF'
+        SQLite Graph Database Extension - Installation Instructions
+        ============================================================
+
+        Platform: ${{ matrix.platform }}
+        Version: ${{ github.ref_name }}
+
+        Quick Start:
+        1. Download libgraph.so
+        2. Load it in SQLite: .load /path/to/libgraph.so
+        3. Create a graph: CREATE VIRTUAL TABLE graph USING graph();
+
+        For detailed instructions, see:
+        https://github.com/agentflare-ai/sqlite-graph/blob/main/INSTALL.md
+
+        Verify the download:
+        sha256sum -c checksums.txt
+        EOF
+
+    - name: Generate checksum
+      run: |
+        cd release/${{ matrix.platform }}
+        sha256sum libgraph.so > checksums.txt
+        if [ -f libgraph_static.a ]; then
+          sha256sum libgraph_static.a >> checksums.txt
+        fi
+        cat checksums.txt
+
+    - name: Create archive
+      run: |
+        cd release
+        tar -czf sqlite-graph-${{ matrix.platform }}-${{ github.ref_name }}.tar.gz ${{ matrix.platform }}
+        cd ..
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: sqlite-graph-${{ matrix.platform }}
+        path: release/sqlite-graph-${{ matrix.platform }}-${{ github.ref_name }}.tar.gz
+        retention-days: 90
+
+    - name: Upload individual binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: binaries-${{ matrix.platform }}
+        path: release/${{ matrix.platform }}/*
+        retention-days: 90
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-release
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts/
+
+    - name: Organize release assets
+      run: |
+        mkdir -p release-assets
+        # Copy tarballs
+        find artifacts -name "*.tar.gz" -exec cp {} release-assets/ \;
+        # Create combined checksums file
+        cd release-assets
+        sha256sum *.tar.gz > SHA256SUMS.txt
+        cd ..
+
+    - name: Extract version from tag
+      id: version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/v}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+
+    - name: Check if pre-release
+      id: prerelease
+      run: |
+        if [[ "${{ github.ref_name }}" =~ (alpha|beta|rc) ]]; then
+          echo "prerelease=true" >> $GITHUB_OUTPUT
+        else
+          echo "prerelease=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Generate release notes
+      id: notes
+      run: |
+        NOTES_FILE="RELEASE_NOTES_v${{ steps.version.outputs.version }}.md"
+        if [ -f "$NOTES_FILE" ]; then
+          echo "Using release notes from $NOTES_FILE"
+          cp "$NOTES_FILE" release-notes.md
+        else
+          echo "Generating release notes from CHANGELOG.md"
+          # Extract the relevant section from CHANGELOG.md
+          awk '/## \[${{ steps.version.outputs.version }}\]/,/## \[/' CHANGELOG.md | head -n -1 > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Release ${{ github.ref_name }}" > release-notes.md
+            echo "" >> release-notes.md
+            echo "See [CHANGELOG.md](CHANGELOG.md) for details." >> release-notes.md
+          fi
+        fi
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: "SQLite Graph Database Extension ${{ github.ref_name }}"
+        body_path: release-notes.md
+        prerelease: ${{ steps.prerelease.outputs.prerelease }}
+        files: |
+          release-assets/*
+        draft: false
+        generate_release_notes: true
+
+    - name: Post-release summary
+      run: |
+        echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Release ${{ github.ref_name }} created successfully" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Assets" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        ls -lh release-assets/ >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Checksums" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat release-assets/SHA256SUMS.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

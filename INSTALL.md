@@ -25,7 +25,48 @@ This guide provides detailed instructions for building and installing the SQLite
 
 ## Quick Installation
 
-### Option 1: Using Make (Recommended)
+### Option 1: Download Pre-built Binary (Linux x86_64) - Recommended
+
+For most users on Linux, downloading the pre-built binary is the fastest option:
+
+```bash
+# Download the latest release
+wget https://github.com/agentflare-ai/sqlite-graph/releases/latest/download/libgraph.so
+
+# Or download a specific version (e.g., v0.1.0-alpha.0)
+wget https://github.com/agentflare-ai/sqlite-graph/releases/download/v0.1.0-alpha.0/libgraph.so
+
+# Verify the download (recommended)
+wget https://github.com/agentflare-ai/sqlite-graph/releases/latest/download/checksums.txt
+sha256sum -c checksums.txt
+
+# The extension is ready to use!
+```
+
+**Supported Distributions**:
+- Ubuntu 20.04, 22.04, 24.04 (x86_64)
+- Debian 11, 12 (x86_64)
+- Other Linux distributions with compatible glibc
+
+#### Verifying Binary Downloads
+
+For security, always verify the checksum of downloaded binaries:
+
+```bash
+# Download the checksum file
+wget https://github.com/agentflare-ai/sqlite-graph/releases/latest/download/SHA256SUMS.txt
+
+# Verify the libgraph.so file
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+Expected output: `libgraph.so: OK`
+
+⚠️ **Security Note**: This is an alpha release. Binaries are not code-signed. For production use, we recommend building from audited source code.
+
+### Option 2: Build from Source
+
+If pre-built binaries aren't available for your platform, or you want to customize the build:
 
 ```bash
 # Clone the repository

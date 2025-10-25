@@ -158,10 +158,12 @@ def register_commands(cli):
                 if from_id != to_id:
                     edge_data = {"relationship": "KNOWS"}
                     try:
-                        db.conn.execute("SELECT graph_edge_add(?, ?, ?, ?) as result", 
+                        db.conn.execute("SELECT graph_edge_add(?, ?, ?, ?) as result",
                                       (from_id, to_id, "KNOWS", json.dumps(edge_data)))
-                    except:
+                    except sqlite3.IntegrityError:
                         pass  # Ignore duplicate edges
+                    except Exception as e:
+                        click.echo(f"Warning: Failed to create edge: {e}", err=True)
         
         click.echo("Sample data created successfully!")
 

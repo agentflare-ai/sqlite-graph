@@ -78,18 +78,25 @@ typedef enum {
   PHYSICAL_PROPERTY_INDEX_SCAN, /* Use property index for scanning */
   PHYSICAL_ALL_RELS_SCAN,      /* Sequential scan of all relationships */
   PHYSICAL_TYPE_INDEX_SCAN,    /* Use type index for relationships */
-  
+
   /* Join Operators */
   PHYSICAL_HASH_JOIN,          /* In-memory hash join */
   PHYSICAL_NESTED_LOOP_JOIN,   /* Nested loop with outer/inner tables */
   PHYSICAL_INDEX_NESTED_LOOP,  /* Index-assisted nested loop */
-  
+
   /* Other Operators */
   PHYSICAL_FILTER,             /* Predicate evaluation */
   PHYSICAL_PROJECTION,         /* Column projection */
   PHYSICAL_SORT,               /* External sorting */
   PHYSICAL_LIMIT,              /* Result limiting */
-  PHYSICAL_AGGREGATION         /* Grouping and aggregation */
+  PHYSICAL_AGGREGATION,        /* Grouping and aggregation */
+
+  /* Mutation Operators */
+  PHYSICAL_CREATE,             /* Create nodes/relationships */
+  PHYSICAL_MERGE,              /* Merge (match or create) */
+  PHYSICAL_SET,                /* Set properties */
+  PHYSICAL_DELETE,             /* Delete nodes/relationships */
+  PHYSICAL_REMOVE              /* Remove properties/labels */
 } PhysicalOperatorType;
 
 /*
