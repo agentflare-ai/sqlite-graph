@@ -35,7 +35,7 @@ deps:
 clean:
 	$(MAKE) -C $(SRC_DIR) clean
 	$(MAKE) -C $(TESTS_DIR) clean
-	$(MAKE) -C _deps clean
+	@if [ -d _deps ]; then $(MAKE) -C _deps clean; fi
 	rm -rf $(BUILD_DIR)
 
 test:
