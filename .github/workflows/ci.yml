@@ -25,6 +25,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential gcc make valgrind
 
+    - name: Setup vendor dependencies
+      run: bash scripts/vendor.sh
+
     - name: Build extension
       run: |
         make clean
@@ -85,6 +88,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential gcc make
 
+    - name: Setup vendor dependencies
+      run: bash scripts/vendor.sh
+
     - name: Build with sanitizers
       run: |
         make clean
@@ -139,6 +145,9 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential gcc make gcovr lcov
+
+    - name: Setup vendor dependencies
+      run: bash scripts/vendor.sh
 
     - name: Build with coverage
       run: |
