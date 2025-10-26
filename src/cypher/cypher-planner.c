@@ -161,21 +161,25 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
     case CYPHER_AST_NODE_PATTERN:
       /* Node pattern becomes a scan operation */
       if( pAst->nChildren > 0 && cypherAstIsType(pAst->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+        /* Named node: (alias) or (alias:Label) */
         zAlias = cypherAstGetValue(pAst->apChildren[0]);
-        
+
         /* Check if this is a labeled node */
         if( pAst->nChildren > 1 && cypherAstIsType(pAst->apChildren[1], CYPHER_AST_LABELS) ) {
           /* Label scan */
           pLogical = logicalPlanNodeCreate(LOGICAL_LABEL_SCAN);
           if( pLogical ) {
             logicalPlanNodeSetAlias(pLogical, zAlias);
-            
-            /* Get first label */
+
+            /* Get first label - check both children and zValue */
             if( pAst->apChildren[1]->nChildren > 0 ) {
               const char *zLabel = cypherAstGetValue(pAst->apChildren[1]->apChildren[0]);
               logicalPlanNodeSetLabel(pLogical, zLabel);
+            } else if( pAst->apChildren[1]->zValue ) {
+              /* Label might be stored directly in zValue instead of children */
+              logicalPlanNodeSetLabel(pLogical, pAst->apChildren[1]->zValue);
             }
-            
+
             /* Add variable to context */
             planContextAddVariable(pContext, zAlias, pLogical);
           }
@@ -187,6 +191,22 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
             planContextAddVariable(pContext, zAlias, pLogical);
           }
         }
+      } else if( pAst->nChildren > 0 && cypherAstIsType(pAst->apChildren[0], CYPHER_AST_LABELS) ) {
+        /* Anonymous labeled node: (:Label) */
+        pLogical = logicalPlanNodeCreate(LOGICAL_LABEL_SCAN);
+        if( pLogical ) {
+          /* Get label from first child */
+          CypherAst *pLabels = pAst->apChildren[0];
+          if( pLabels->nChildren > 0 ) {
+            const char *zLabel = cypherAstGetValue(pLabels->apChildren[0]);
+            logicalPlanNodeSetLabel(pLogical, zLabel);
+          } else if( pLabels->zValue ) {
+            logicalPlanNodeSetLabel(pLogical, pLabels->zValue);
+          }
+        }
+      } else if( pAst->nChildren == 0 ) {
+        /* Anonymous unlabeled node: () */
+        pLogical = logicalPlanNodeCreate(LOGICAL_NODE_SCAN);
       }
       break;
       
@@ -421,17 +441,43 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
                 logicalPlanNodeAddChild(pExpand, pLogical);
               }
 
-              /* Get target node pattern (next element) and extract its alias */
+              /* Get target node pattern (next element) and extract its alias and label */
               if( i + 1 < pAst->nChildren &&
                   cypherAstIsType(pAst->apChildren[i + 1], CYPHER_AST_NODE_PATTERN) ) {
                 CypherAst *pTargetNode = pAst->apChildren[i + 1];
-                if( pTargetNode->nChildren > 0 &&
-                    cypherAstIsType(pTargetNode->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
-                  const char *zTargetAlias = cypherAstGetValue(pTargetNode->apChildren[0]);
-                  if( zTargetAlias ) {
-                    logicalPlanNodeSetAlias(pExpand, zTargetAlias);
+
+                /* Create a logical node for the target to capture its label */
+                LogicalPlanNode *pTargetLogical = logicalPlanNodeCreate(LOGICAL_NODE_SCAN);
+                if( pTargetLogical ) {
+                  /* Extract target alias */
+                  if( pTargetNode->nChildren > 0 &&
+                      cypherAstIsType(pTargetNode->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+                    const char *zTargetAlias = cypherAstGetValue(pTargetNode->apChildren[0]);
+                    if( zTargetAlias ) {
+                      logicalPlanNodeSetAlias(pExpand, zTargetAlias);
+                      logicalPlanNodeSetAlias(pTargetLogical, zTargetAlias);
+                    }
                   }
+
+                  /* Extract target label - check for LABELS node in children */
+                  for( int k = 0; k < pTargetNode->nChildren; k++ ) {
+                    if( cypherAstIsType(pTargetNode->apChildren[k], CYPHER_AST_LABELS) ) {
+                      CypherAst *pLabels = pTargetNode->apChildren[k];
+                      /* Check both children and zValue for label */
+                      if( pLabels->nChildren > 0 ) {
+                        const char *zLabel = cypherAstGetValue(pLabels->apChildren[0]);
+                        logicalPlanNodeSetLabel(pTargetLogical, zLabel);
+                      } else if( pLabels->zValue ) {
+                        logicalPlanNodeSetLabel(pTargetLogical, pLabels->zValue);
+                      }
+                      break;
+                    }
+                  }
+
+                  /* Add target node as second child of expand */
+                  logicalPlanNodeAddChild(pExpand, pTargetLogical);
                 }
+
                 /* Skip the target node in the loop since we handled it */
                 i++;
               }

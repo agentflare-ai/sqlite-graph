@@ -140,6 +140,10 @@ PhysicalPlanNode *logicalPlanToPhysical(LogicalPlanNode *pLogical, PlanContext *
       } else {
         pPhysical = physicalPlanNodeCreate(PHYSICAL_ALL_NODES_SCAN);
         if( pPhysical ) {
+          /* Preserve label for filtering even when not using index */
+          if( pLogical->zLabel ) {
+            pPhysical->zLabel = sqlite3_mprintf("%s", pLogical->zLabel);
+          }
           pPhysical->rCost = pLogical->rEstimatedCost;
         }
       }

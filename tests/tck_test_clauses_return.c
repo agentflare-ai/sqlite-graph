@@ -45,108 +45,182 @@ void tearDown(void) {
 void test_clauses_return_Return1_01(void) {
     // TCK: Return node
     // Cypher: CREATE (a) RETURN a
-    // SQL equivalent: INSERT + SELECT
-    
-    int rc = sqlite3_exec(db, 
-        "CREATE TABLE nodes(id INTEGER PRIMARY KEY, labels TEXT, properties TEXT);"
-        "CREATE TABLE edges(id INTEGER PRIMARY KEY, source INTEGER, target INTEGER, edge_type TEXT, weight REAL, properties TEXT);"
-        "CREATE VIRTUAL TABLE graph USING graph(nodes, edges);",
-        NULL, NULL, &error_msg);
-    
-    if (rc != SQLITE_OK) {
-        printf("Setup failed: %s\n", error_msg);
-        TEST_FAIL();
-        return;
-    }
-    
-    // Create and return node: CREATE (a) RETURN a
-    rc = sqlite3_exec(db, 
-        "INSERT INTO graph (type, properties) VALUES ('node', '{}')",
-        NULL, NULL, &error_msg);
-    
-    if (rc != SQLITE_OK) {
-        printf("Create node failed: %s\n", error_msg);
-        TEST_FAIL();
-        return;
-    }
-    
-    // Return the node
+
     sqlite3_stmt *stmt;
-    rc = sqlite3_prepare_v2(db, "SELECT * FROM graph WHERE type = 'node'", -1, &stmt, NULL);
-    TEST_ASSERT_EQUAL(SQLITE_OK, rc);
+    int rc;
+
+    // Create graph virtual table (creates backing tables automatically)
+    rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
+    if (rc != SQLITE_OK) {
+        printf("Graph table creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
     
-    TEST_ASSERT_EQUAL(SQLITE_ROW, sqlite3_step(stmt));
+    // Execute Cypher query
+    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE (a) RETURN a')", -1, &stmt, NULL);
+
+    if (rc != SQLITE_OK) {
+        printf("Cypher prepare failed: %s\n", sqlite3_errmsg(db));
+        TEST_FAIL();
+        return;
+    }
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        printf("Cypher execute failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
     
+    // Parse JSON result
+    const char *result_json = (const char*)sqlite3_column_text(stmt, 0);
+    TEST_ASSERT_NOT_NULL(result_json);
+
+    // Count results (simple JSON array counting)
+    int count = 0;
+    if (result_json[0] == '[') {
+        const char *p = result_json;
+        while (*p) {
+            if (*p == '{') count++;
+            p++;
+        }
+    }
+    TEST_ASSERT_EQUAL(1, count);
+
     sqlite3_finalize(stmt);
 }
 
 void test_clauses_return_Return1_02(void) {
-    // TCK: Return literal
-    // Cypher: RETURN 1
-    // SQL equivalent: SELECT 1
-    
-    int rc = sqlite3_exec(db, 
-        "CREATE TABLE nodes(id INTEGER PRIMARY KEY, labels TEXT, properties TEXT);"
-        "CREATE TABLE edges(id INTEGER PRIMARY KEY, source INTEGER, target INTEGER, edge_type TEXT, weight REAL, properties TEXT);"
-        "CREATE VIRTUAL TABLE graph USING graph(nodes, edges);",
-        NULL, NULL, &error_msg);
-    
+    // TCK: Return multiple columns
+    // Cypher: MATCH (a)-[r:KNOWS]->(b) RETURN a, r, b
+
+    sqlite3_stmt *stmt;
+    int rc;
+
+    // Create graph virtual table (creates backing tables automatically)
+    rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
     if (rc != SQLITE_OK) {
-        printf("Setup failed: %s\n", error_msg);
+        printf("Graph table creation failed: %s\n", error_msg);
         TEST_FAIL();
         return;
     }
     
-    // Return literal: RETURN 1
-    sqlite3_stmt *stmt;
-    rc = sqlite3_prepare_v2(db, "SELECT 1", -1, &stmt, NULL);
-    TEST_ASSERT_EQUAL(SQLITE_OK, rc);
+    // Setup query 1
+    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE (a:Person {name: \"Alice\"})-[:KNOWS]->(b:Person {name: \"Bob\"})')", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        printf("Setup query 1 prepare failed: %s\n", sqlite3_errmsg(db));
+        TEST_FAIL();
+        return;
+    }
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        printf("Setup query 1 execute failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
+    sqlite3_finalize(stmt);
+
+    // Execute Cypher query
+    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('MATCH (a)-[r:KNOWS]->(b) RETURN a, r, b')", -1, &stmt, NULL);
+
+    if (rc != SQLITE_OK) {
+        printf("Cypher prepare failed: %s\n", sqlite3_errmsg(db));
+        TEST_FAIL();
+        return;
+    }
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        printf("Cypher execute failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
     
-    TEST_ASSERT_EQUAL(SQLITE_ROW, sqlite3_step(stmt));
-    int value = sqlite3_column_int(stmt, 0);
-    TEST_ASSERT_EQUAL(1, value);
-    
+    // Parse JSON result
+    const char *result_json = (const char*)sqlite3_column_text(stmt, 0);
+    TEST_ASSERT_NOT_NULL(result_json);
+
+    // Count results (simple JSON array counting)
+    int count = 0;
+    if (result_json[0] == '[') {
+        const char *p = result_json;
+        while (*p) {
+            if (*p == '{') count++;
+            p++;
+        }
+    }
+    TEST_ASSERT_EQUAL(1, count);
+
     sqlite3_finalize(stmt);
 }
 
 void test_clauses_return_Return2_01(void) {
-    // TCK: Return node property
-    // Cypher: CREATE (a {name: 'A'}) RETURN a.name
-    // SQL equivalent: INSERT with properties + SELECT property
-    
-    int rc = sqlite3_exec(db, 
-        "CREATE TABLE nodes(id INTEGER PRIMARY KEY, labels TEXT, properties TEXT);"
-        "CREATE TABLE edges(id INTEGER PRIMARY KEY, source INTEGER, target INTEGER, edge_type TEXT, weight REAL, properties TEXT);"
-        "CREATE VIRTUAL TABLE graph USING graph(nodes, edges);",
-        NULL, NULL, &error_msg);
-    
-    if (rc != SQLITE_OK) {
-        printf("Setup failed: %s\n", error_msg);
-        TEST_FAIL();
-        return;
-    }
-    
-    // Create node with property: CREATE (a {name: 'A'})
-    rc = sqlite3_exec(db, 
-        "INSERT INTO graph (type, properties) VALUES ('node', '{\"name\": \"A\"}')",
-        NULL, NULL, &error_msg);
-    
-    if (rc != SQLITE_OK) {
-        printf("Create node failed: %s\n", error_msg);
-        TEST_FAIL();
-        return;
-    }
-    
-    // Return node property: RETURN a.name (simplified as property lookup)
+    // TCK: Return nodes from relationship pattern
+    // Cypher: MATCH (a)-[:KNOWS]->(b) RETURN a, b
+
     sqlite3_stmt *stmt;
-    rc = sqlite3_prepare_v2(db, "SELECT properties FROM graph WHERE type = 'node'", -1, &stmt, NULL);
-    TEST_ASSERT_EQUAL(SQLITE_OK, rc);
+    int rc;
+
+    // Create graph virtual table (creates backing tables automatically)
+    rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
+    if (rc != SQLITE_OK) {
+        printf("Graph table creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
     
-    TEST_ASSERT_EQUAL(SQLITE_ROW, sqlite3_step(stmt));
-    const char *props = (const char*)sqlite3_column_text(stmt, 0);
-    TEST_ASSERT_NOT_NULL(props);
-    TEST_ASSERT_TRUE(strstr(props, "A") != NULL);
+    // Setup query 1
+    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE (:Person {name: \"Alice\"})-[:KNOWS]->(:Person {name: \"Bob\"})')", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        printf("Setup query 1 prepare failed: %s\n", sqlite3_errmsg(db));
+        TEST_FAIL();
+        return;
+    }
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        printf("Setup query 1 execute failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
+    sqlite3_finalize(stmt);
+
+    // Execute Cypher query
+    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('MATCH (a)-[:KNOWS]->(b) RETURN a, b')", -1, &stmt, NULL);
+
+    if (rc != SQLITE_OK) {
+        printf("Cypher prepare failed: %s\n", sqlite3_errmsg(db));
+        TEST_FAIL();
+        return;
+    }
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        printf("Cypher execute failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
     
+    // Parse JSON result
+    const char *result_json = (const char*)sqlite3_column_text(stmt, 0);
+    TEST_ASSERT_NOT_NULL(result_json);
+
+    // Count results (simple JSON array counting)
+    int count = 0;
+    if (result_json[0] == '[') {
+        const char *p = result_json;
+        while (*p) {
+            if (*p == '{') count++;
+            p++;
+        }
+    }
+    TEST_ASSERT_EQUAL(1, count);
+
     sqlite3_finalize(stmt);
 }
 

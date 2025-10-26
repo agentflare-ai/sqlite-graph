@@ -108,13 +108,24 @@ typedef struct AllNodesScanData {
 
 static int allNodesScanOpen(CypherIterator *pIterator) {
   AllNodesScanData *pData = (AllNodesScanData*)pIterator->pIterData;
+  PhysicalPlanNode *pPlan = pIterator->pPlan;
   GraphVtab *pGraph = pIterator->pContext->pGraph;
   char *zSql;
   int rc;
 
   if( !pGraph ) return SQLITE_ERROR;
 
-  zSql = sqlite3_mprintf("SELECT id FROM %s_nodes", pGraph->zTableName);
+  /* If a label is specified, filter by it */
+  if( pPlan && pPlan->zLabel ) {
+    /* Labels are stored as JSON array, check if label exists in array */
+    zSql = sqlite3_mprintf(
+      "SELECT id FROM %s WHERE json_array_length(json_extract(labels, '$')) > 0 "
+      "AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = %Q)",
+      pGraph->zNodeTableName, pPlan->zLabel);
+  } else {
+    zSql = sqlite3_mprintf("SELECT id FROM %s", pGraph->zNodeTableName);
+  }
+
   rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pData->pStmt, 0);
   sqlite3_free(zSql);
   if( rc!=SQLITE_OK ) return rc;
@@ -1002,11 +1013,21 @@ static int expandNext(CypherIterator *pIterator, CypherResult *pResult) {
           return rc;
         }
 
-        /* Add relationship */
+        /* Add relationship with type information */
         CypherValue relValue;
         memset(&relValue, 0, sizeof(relValue));
-        relValue.type = CYPHER_VALUE_RELATIONSHIP;
-        relValue.u.iRelId = sqlite3_column_int64(pData->pStmt, 1);
+
+        /* Get relationship ID and type from query results */
+        sqlite3_int64 iRelId = sqlite3_column_int64(pData->pStmt, 1);
+        const unsigned char *zRelType = sqlite3_column_text(pData->pStmt, 2);
+
+        /* Store as string with type information for better serialization */
+        relValue.type = CYPHER_VALUE_STRING;
+        if (zRelType && zRelType[0]) {
+          relValue.u.zString = sqlite3_mprintf("Relationship(id=%lld,type=%s)", iRelId, zRelType);
+        } else {
+          relValue.u.zString = sqlite3_mprintf("Relationship(%lld)", iRelId);
+        }
 
         const char *zRelAlias = pPlan->zLabel ? pPlan->zLabel : "r";
         rc = cypherResultAddColumn(pResult, zRelAlias, &relValue);
@@ -1044,6 +1065,13 @@ static int expandNext(CypherIterator *pIterator, CypherResult *pResult) {
     memset(pData->pCurrentRow, 0, sizeof(CypherResult));
 
     /* Get next row from source */
+    if (!pData->pSource) {
+      /* No source iterator - this expand has no input, so we're done */
+      pData->bSourceExhausted = 1;
+      pIterator->bEof = 1;
+      return SQLITE_DONE;
+    }
+
     rc = pData->pSource->xNext(pData->pSource, pData->pCurrentRow);
 
     if (rc == SQLITE_DONE) {
@@ -1078,18 +1106,47 @@ static int expandNext(CypherIterator *pIterator, CypherResult *pResult) {
 
     /* Prepare query for relationships from this node */
     const char *zEdgeType = pPlan->zProperty ? pPlan->zProperty : "";
+    const char *zTargetLabel = NULL;
     char *zSql;
 
-    if (zEdgeType && zEdgeType[0]) {
-      zSql = sqlite3_mprintf(
-        "SELECT target, id FROM %s_edges WHERE source = %lld AND edge_type = '%q'",
-        pGraph->zTableName, pData->iCurrentNodeId, zEdgeType
-      );
+    /* Check if there's a target node specification (second child) with a label */
+    if (pPlan->nChildren > 1 && pPlan->apChildren[1]) {
+      zTargetLabel = pPlan->apChildren[1]->zLabel;
+    }
+
+    /* Build SQL query with optional edge type and target label filtering */
+    if (zTargetLabel && zTargetLabel[0]) {
+      /* Need to filter by target node label */
+      if (zEdgeType && zEdgeType[0]) {
+        zSql = sqlite3_mprintf(
+          "SELECT e.target, e.id, e.edge_type FROM %s_edges e "
+          "JOIN %s_nodes n ON e.target = n.id "
+          "WHERE e.source = %lld AND e.edge_type = '%q' "
+          "AND EXISTS (SELECT 1 FROM json_each(n.labels) WHERE value = %Q)",
+          pGraph->zTableName, pGraph->zTableName, pData->iCurrentNodeId, zEdgeType, zTargetLabel
+        );
+      } else {
+        zSql = sqlite3_mprintf(
+          "SELECT e.target, e.id, e.edge_type FROM %s_edges e "
+          "JOIN %s_nodes n ON e.target = n.id "
+          "WHERE e.source = %lld "
+          "AND EXISTS (SELECT 1 FROM json_each(n.labels) WHERE value = %Q)",
+          pGraph->zTableName, pGraph->zTableName, pData->iCurrentNodeId, zTargetLabel
+        );
+      }
     } else {
-      zSql = sqlite3_mprintf(
-        "SELECT target, id FROM %s_edges WHERE source = %lld",
-        pGraph->zTableName, pData->iCurrentNodeId
-      );
+      /* No target label filtering */
+      if (zEdgeType && zEdgeType[0]) {
+        zSql = sqlite3_mprintf(
+          "SELECT target, id, edge_type FROM %s_edges WHERE source = %lld AND edge_type = '%q'",
+          pGraph->zTableName, pData->iCurrentNodeId, zEdgeType
+        );
+      } else {
+        zSql = sqlite3_mprintf(
+          "SELECT target, id, edge_type FROM %s_edges WHERE source = %lld",
+          pGraph->zTableName, pData->iCurrentNodeId
+        );
+      }
     }
 
     if (!zSql) return SQLITE_NOMEM;
@@ -1316,15 +1373,20 @@ static int createIteratorNext(CypherIterator *pIterator, CypherResult *pResult) 
     for (i = 0; i < pPattern->nChildren; i++) {
       if (cypherAstIsType(pPattern->apChildren[i], CYPHER_AST_NODE_PATTERN)) {
         CypherAst *pNode = pPattern->apChildren[i];
-        const char *zLabels = "";
+        const char *zLabels = "[]";  /* Default to empty JSON array */
         const char *zProperties = "{}";
 
         /* Extract labels and properties from node pattern */
         char *zJsonProps = NULL;
+        char *zJsonLabels = NULL;
         for (int j = 0; j < pNode->nChildren; j++) {
           if (cypherAstIsType(pNode->apChildren[j], CYPHER_AST_LABELS)) {
             CypherAst *pLabels = pNode->apChildren[j];
-            if (pLabels->zValue) zLabels = pLabels->zValue;
+            if (pLabels->zValue) {
+              /* Convert single label to JSON array format */
+              zJsonLabels = sqlite3_mprintf("[\"%s\"]", pLabels->zValue);
+              if (zJsonLabels) zLabels = zJsonLabels;
+            }
           } else if (cypherAstIsType(pNode->apChildren[j], CYPHER_AST_MAP)) {
             zJsonProps = convertMapToJson(pNode->apChildren[j]);
             if (zJsonProps) zProperties = zJsonProps;
@@ -1337,6 +1399,7 @@ static int createIteratorNext(CypherIterator *pIterator, CypherResult *pResult) 
 
         rc = sqlite3_step(pData->pInsertStmt);
         if (zJsonProps) sqlite3_free(zJsonProps);  /* Free allocated JSON string */
+        if (zJsonLabels) sqlite3_free(zJsonLabels);  /* Free allocated JSON labels string */
         if (rc != SQLITE_DONE) return SQLITE_ERROR;
 
         aiNodeIds[nNodes++] = sqlite3_last_insert_rowid(pContext->pDb);
