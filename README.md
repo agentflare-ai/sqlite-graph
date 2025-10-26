@@ -19,6 +19,8 @@ A powerful SQLite extension that adds graph database capabilities with full Cyph
   - `CREATE (p:Person)` - Create nodes with labels ✅
   - `MATCH (n) RETURN n` - Basic pattern matching ✅
   - `MATCH (n:Label) RETURN n` - Label-based matching ✅
+  - `MATCH (n) WHERE n.prop > value RETURN n` - Property filtering ✅
+  - WHERE clause with all comparison operators: `=, >, <, >=, <=, <>` ✅
   - Full execution pipeline: parser → logical planner → physical planner → executor ✅
   - **70/70 CREATE TCK tests passing** (100% openCypher compliance for CREATE)
 - **Graph Virtual Tables**: SQLite virtual table integration for graph data
@@ -32,7 +34,7 @@ A powerful SQLite extension that adds graph database capabilities with full Cyph
 ### 🚧 In Progress
 - **Advanced Cypher Features**:
   - Relationship matching (edges/patterns)
-  - WHERE clause filtering
+  - Complex expressions in WHERE (AND, OR, NOT)
   - Property expressions in RETURN
   - Aggregations (COUNT, SUM, etc.)
   - ORDER BY, SKIP, LIMIT
@@ -104,6 +106,11 @@ cursor = conn.execute("SELECT cypher_execute('MATCH (n:Person) RETURN n')")
 results = json.loads(cursor.fetchone()[0])
 print(results)  # [{"n": Node(1)}]
 
+# Filter with WHERE clause (NEW!)
+cursor = conn.execute("SELECT cypher_execute('MATCH (p:Person) WHERE p.age > 25 RETURN p')")
+results = json.loads(cursor.fetchone()[0])
+print(results)  # Returns nodes where age > 25
+
 # Option 2: Add nodes using SQL functions
 conn.execute("SELECT graph_node_add(1, ?) as id", (json.dumps({"name": "Alice", "age": 30}),))
 conn.execute("SELECT graph_node_add(2, ?) as id", (json.dumps({"name": "Bob", "age": 25}),))
@@ -134,7 +141,7 @@ See the `examples/` directory for fully functional demonstrations:
 - **python_examples.py** - 6 comprehensive examples showcasing all working features
 - **cypher_demo.py** - NEW! Cypher CREATE query examples
 
-> **Note**: Basic Cypher CREATE queries now work! MATCH and RETURN are in development for v0.2.0. The alpha version also provides SQL function-based graph operations.
+> **Note**: Basic Cypher queries now work! CREATE, MATCH, WHERE, and RETURN operations are functional. Advanced pattern matching and relationship queries are in development for v0.2.0. The alpha version also provides SQL function-based graph operations.
 
 ## Documentation
 

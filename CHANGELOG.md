@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (January 2025)
+- **WHERE Clause Implementation** (2025-01-25)
+  - Property-based filtering with all comparison operators: `=, >, <, >=, <=, <>`
+  - Filter iterator with property value extraction via JSON functions
+  - Support for queries like: `MATCH (p:Person) WHERE p.age > 25 RETURN p`
+  - Fixed critical iterator double-free bug
+  - Fixed result accumulation bug in scan iterators
+  - Parser support for COMPARISON AST nodes
+
+- **Basic Cypher Read Queries** (2025-01-24)
+  - MATCH operations: `MATCH (n) RETURN n`, `MATCH (n:Label) RETURN n`
+  - RETURN clause with pass-through projection
+  - AllNodesScan and LabelIndexScan iterators
+  - Complete execution pipeline: parser → logical planner → physical planner → executor
+  - 70/70 CREATE TCK tests passing (100% openCypher compliance for CREATE)
+
+### Fixed (January 2025)
+- Parser comparison operator corruption (token reuse bug)
+- Iterator destruction double-free vulnerability
+- Scan iterator result column reset bug causing duplicate results
+- Memory corruption in result collection
+
 ### Planned for v0.2.0
+- Relationship matching in MATCH queries
+- Complex expressions in WHERE (AND, OR, NOT)
+- Property expressions in CREATE and RETURN
 - macOS and Windows platform support
 - Performance optimizations for large graphs
 - Additional graph algorithms

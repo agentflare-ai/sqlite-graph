@@ -72,16 +72,17 @@ This document provides a detailed breakdown of feature status and future plans f
   - Full execution pipeline functional
   - **Status**: Production-ready for CREATE operations
 
-- ✅ **MATCH Operations** (NEW!)
+- ✅ **MATCH Operations** (COMPLETE!)
   - `MATCH (n) RETURN n` - Match all nodes ✅ Working
   - `MATCH (n:Label) RETURN n` - Label-based matching ✅ Working
+  - `MATCH (n) WHERE n.prop > value RETURN n` - Property filtering ✅ Working
   - AllNodesScan iterator ✅ Functional
   - LabelIndexScan iterator ✅ Functional
-  - **Status**: Basic MATCH queries working!
+  - Filter iterator with property comparison ✅ Functional
+  - **Status**: Basic MATCH queries fully working!
   - **TCK Status**: 4 tests passing, 157 advanced scenarios not yet implemented
   - **Limitations**:
     - Relationship matching not yet supported
-    - WHERE clause filtering not implemented
     - Complex patterns not supported
 
 - ✅ **RETURN Operations** (NEW!)
@@ -166,14 +167,14 @@ This document provides a detailed breakdown of feature status and future plans f
   - **Progress**: ~30% complete
 
 - [ ] **Cypher Read Operations** (IN PROGRESS)
-  - [ ] MATCH node patterns
+  - [x] MATCH node patterns (AllNodesScan, LabelIndexScan)
   - [ ] MATCH relationship patterns
-  - [ ] WHERE clause filtering
-  - [ ] RETURN clause with projections
+  - [x] WHERE clause filtering (property comparisons: =, >, <, >=, <=, <>)
+  - [x] RETURN clause with projections (pass-through mode)
   - [ ] Pattern matching engine
-  - [ ] Expression evaluation
+  - [ ] Expression evaluation (complex expressions)
   - **Target**: Execute all basic Cypher queries
-  - **Progress**: ~15% complete (infrastructure done)
+  - **Progress**: ~40% complete (MATCH/WHERE/RETURN basics working)
 
 - [ ] **Query Optimization**
   - Cost-based query planner
@@ -266,10 +267,10 @@ This document provides a detailed breakdown of feature status and future plans f
 ## Known Limitations (Alpha)
 
 ### Current Limitations
-1. **Limited Cypher Support**: Only basic CREATE queries work (CREATE (n), CREATE (n:Label))
+1. **Limited Cypher Support**: Basic MATCH/WHERE/RETURN working
    - Properties not yet supported in CREATE
-   - MATCH queries not implemented
-   - RETURN clause not functional
+   - Relationship matching not implemented
+   - Complex expressions not supported in WHERE
    - No relationship creation via Cypher
 2. **Limited Algorithms**: Only basic connectivity and centrality
 3. **No Pattern Matching**: Cannot match complex graph patterns yet
@@ -345,7 +346,16 @@ Priority is given to features with:
 
 ## Recent Changes (January 2025)
 
-### Cypher Execution Breakthrough
+### WHERE Clause Implementation (January 25, 2025)
+- ✅ WHERE clause fully functional with property filtering
+- ✅ All comparison operators working: `=, >, <, >=, <=, <>`
+- ✅ Fixed critical iterator double-free bug
+- ✅ Fixed result accumulation bug in scan iterators
+- ✅ Property value extraction using JSON functions
+- ✅ Query example: `MATCH (p:Person) WHERE p.age > 25 RETURN p`
+- 🎯 **Impact**: Complete basic read query support!
+
+### Cypher Execution Breakthrough (January 24, 2025)
 - ✅ Implemented full query execution pipeline (parser → planner → executor)
 - ✅ CREATE queries now work: `CREATE (n)`, `CREATE (p:Person)`
 - ✅ Iterator-based execution engine with Volcano model
@@ -354,12 +364,14 @@ Priority is given to features with:
 - 🎯 **Impact**: First working Cypher queries! Foundation for full Cypher support.
 
 ### Technical Achievements
-- Fixed parser token reuse bug (memory corruption)
-- Implemented proper token length handling (lexer tokens not null-terminated)
-- Added label/property propagation from logical to physical plans
-- Simplified write operations with direct SQL INSERT approach
-- Comprehensive test suite for CREATE operations
+- Fixed parser comparison operator corruption (token reuse bug)
+- Implemented filter iterator with property comparison logic
+- Fixed iterator destruction double-free vulnerability
+- Fixed scan iterator result column reset bug
+- Added COMPARISON AST node support in planner
+- Cleaned up codebase (removed debug output, consolidated cypher-sql files)
+- Comprehensive test suite for WHERE operations
 
 ---
 
-Last Updated: 2025-01-24
+Last Updated: 2025-01-25
