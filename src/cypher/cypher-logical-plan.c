@@ -47,7 +47,8 @@ void logicalPlanNodeDestroy(LogicalPlanNode *pNode) {
   sqlite3_free(pNode->zLabel);
   sqlite3_free(pNode->zProperty);
   sqlite3_free(pNode->zValue);
-  sqlite3_free(pNode->pExtra);
+  /* Don't free pExtra - it points to AST owned by parser */
+  /* sqlite3_free(pNode->pExtra); */
   sqlite3_free(pNode);
 }
 

@@ -8,6 +8,7 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include "cypher-planner.h"
 #include <string.h>
 #include <assert.h>
+#include <stdio.h>
 
 PhysicalPlanNode *physicalPlanNodeCreate(PhysicalOperatorType type) {
   PhysicalPlanNode *pNode;
@@ -45,7 +46,8 @@ void physicalPlanNodeDestroy(PhysicalPlanNode *pNode) {
   sqlite3_free(pNode->zLabel);
   sqlite3_free(pNode->zProperty);
   sqlite3_free(pNode->zValue);
-  sqlite3_free(pNode->pExecState);
+  /* Don't free pExecState - it points to AST owned by parser */
+  /* sqlite3_free(pNode->pExecState); */
   sqlite3_free(pNode);
 }
 
@@ -95,6 +97,7 @@ const char *physicalOperatorTypeName(PhysicalOperatorType type) {
     case PHYSICAL_HASH_JOIN:          return "HashJoin";
     case PHYSICAL_NESTED_LOOP_JOIN:   return "NestedLoopJoin";
     case PHYSICAL_INDEX_NESTED_LOOP:  return "IndexNestedLoop";
+    case PHYSICAL_EXPAND:             return "Expand";
     case PHYSICAL_FILTER:             return "Filter";
     case PHYSICAL_PROJECTION:         return "Projection";
     case PHYSICAL_SORT:               return "Sort";
@@ -162,14 +165,25 @@ PhysicalPlanNode *logicalPlanToPhysical(LogicalPlanNode *pLogical, PlanContext *
         if( pLogical->zValue ) {
           pPhysical->zValue = sqlite3_mprintf("%s", pLogical->zValue);
         }
+        /* Copy operator from iFlags */
+        pPhysical->iFlags = pLogical->iFlags;
+        /* Copy filter AST from logical plan's pExtra to physical plan's pExecState */
+        if( pLogical->pExtra ) {
+          pPhysical->pExecState = pLogical->pExtra;
+        }
         pPhysical->rSelectivity = 0.1; /* Assume 10% selectivity */
       }
       break;
       
+    case LOGICAL_EXPAND:
+      /* Relationship expansion/traversal */
+      pPhysical = physicalPlanNodeCreate(PHYSICAL_EXPAND);
+      break;
+
     case LOGICAL_HASH_JOIN:
       pPhysical = physicalPlanNodeCreate(PHYSICAL_HASH_JOIN);
       break;
-      
+
     case LOGICAL_NESTED_LOOP_JOIN:
       /* Choose between nested loop and index nested loop */
       if( pContext && pContext->bUseIndexes ) {
@@ -250,7 +264,11 @@ PhysicalPlanNode *logicalPlanToPhysical(LogicalPlanNode *pLogical, PlanContext *
   /* Set cost and row estimates */
   pPhysical->rCost = pLogical->rEstimatedCost;
   pPhysical->iRows = pLogical->iEstimatedRows;
-  
+
+  /* Copy extra data (e.g., pattern AST for CREATE) */
+  pPhysical->pExecState = pLogical->pExtra;
+  pPhysical->iFlags = pLogical->iFlags;
+
   /* Convert children recursively */
   for( i = 0; i < pLogical->nChildren; i++ ) {
     pChild = logicalPlanToPhysical(pLogical->apChildren[i], pContext);

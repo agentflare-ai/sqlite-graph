@@ -194,13 +194,17 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       /* WHERE clause becomes a filter */
       if( pAst->nChildren > 0 ) {
         CypherAst *pExpr = pAst->apChildren[0];
-        
-        if( cypherAstIsType(pExpr, CYPHER_AST_BINARY_OP) && 
-            strcmp(cypherAstGetValue(pExpr), "=") == 0 &&
+        const char *zOp = NULL;
+
+        /* Handle both BINARY_OP and COMPARISON nodes */
+        if( (cypherAstIsType(pExpr, CYPHER_AST_BINARY_OP) ||
+             cypherAstIsType(pExpr, CYPHER_AST_COMPARISON)) &&
             pExpr->nChildren >= 2 ) {
-          
-          /* Property filter: n.prop = value */
-          if( cypherAstIsType(pExpr->apChildren[0], CYPHER_AST_PROPERTY) ) {
+          /* For COMPARISON nodes, the operator is stored in the node's zValue */
+          zOp = pExpr->zValue;
+
+          /* Property filter: n.prop OP value (where OP is =, >, <, >=, <=, <>) */
+          if( zOp && cypherAstIsType(pExpr->apChildren[0], CYPHER_AST_PROPERTY) ) {
             pLogical = logicalPlanNodeCreate(LOGICAL_PROPERTY_FILTER);
             if( pLogical ) {
               CypherAst *pProp = pExpr->apChildren[0];
@@ -208,18 +212,31 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
                 const char *zVar = cypherAstGetValue(pProp->apChildren[0]);
                 const char *zProp = cypherAstGetValue(pProp->apChildren[1]);
                 const char *zValue = cypherAstGetValue(pExpr->apChildren[1]);
-                
+
                 logicalPlanNodeSetAlias(pLogical, zVar);
                 logicalPlanNodeSetProperty(pLogical, zProp);
                 logicalPlanNodeSetValue(pLogical, zValue);
+
+                /* Store operator in iFlags for later use */
+                if( strcmp(zOp, "=") == 0 ) pLogical->iFlags = 1;
+                else if( strcmp(zOp, ">") == 0 ) pLogical->iFlags = 2;
+                else if( strcmp(zOp, "<") == 0 ) pLogical->iFlags = 3;
+                else if( strcmp(zOp, ">=") == 0 ) pLogical->iFlags = 4;
+                else if( strcmp(zOp, "<=") == 0 ) pLogical->iFlags = 5;
+                else if( strcmp(zOp, "<>") == 0 || strcmp(zOp, "!=") == 0 ) pLogical->iFlags = 6;
               }
             }
           }
         }
-        
+
         if( !pLogical ) {
           /* Generic filter */
           pLogical = logicalPlanNodeCreate(LOGICAL_FILTER);
+        }
+
+        /* Store the filter expression AST in pExtra for later use */
+        if( pLogical && pExpr ) {
+          pLogical->pExtra = pExpr;
         }
       }
       break;
@@ -361,18 +378,76 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
 
     case CYPHER_AST_PATTERN:
       /* Pattern becomes a sequence of node/relationship matches */
+      /* Handle pattern elements: (a)-[r]->(b) has children [NODE, REL, NODE] */
       if( pAst->nChildren > 0 ) {
+        /* Start with first element (usually a node) */
         pLogical = compileAstNode(pAst->apChildren[0], pContext);
 
-        /* Combine multiple pattern elements with joins */
+        /* Process remaining elements - handle relationships specially */
         for( i = 1; i < pAst->nChildren; i++ ) {
-          pChild = compileAstNode(pAst->apChildren[i], pContext);
-          if( pChild && pLogical ) {
-            LogicalPlanNode *pJoin = logicalPlanNodeCreate(LOGICAL_HASH_JOIN);
-            if( pJoin ) {
-              logicalPlanNodeAddChild(pJoin, pLogical);
-              logicalPlanNodeAddChild(pJoin, pChild);
-              pLogical = pJoin;
+          CypherAst *pElement = pAst->apChildren[i];
+
+          if( cypherAstIsType(pElement, CYPHER_AST_REL_PATTERN) ) {
+            /* This is a relationship - create EXPAND with current plan as source */
+            LogicalPlanNode *pExpand = logicalPlanNodeCreate(LOGICAL_EXPAND);
+            if( pExpand ) {
+              /* Extract relationship variable and type */
+              const char *zVarName = NULL;
+              const char *zRelType = NULL;
+
+              for( int j = 0; j < pElement->nChildren; j++ ) {
+                if( cypherAstIsType(pElement->apChildren[j], CYPHER_AST_IDENTIFIER) ) {
+                  zVarName = cypherAstGetValue(pElement->apChildren[j]);
+                } else if( cypherAstIsType(pElement->apChildren[j], CYPHER_AST_LABELS) ) {
+                  CypherAst *pLabels = pElement->apChildren[j];
+                  if( pLabels->zValue ) {
+                    zRelType = pLabels->zValue;
+                  }
+                }
+              }
+
+              /* Store relationship variable in zLabel */
+              if( zVarName ) {
+                logicalPlanNodeSetLabel(pExpand, zVarName);
+              }
+
+              /* Store relationship type in zProperty */
+              if( zRelType ) {
+                logicalPlanNodeSetProperty(pExpand, zRelType);
+              }
+
+              /* Add source scan as child */
+              if( pLogical ) {
+                logicalPlanNodeAddChild(pExpand, pLogical);
+              }
+
+              /* Get target node pattern (next element) and extract its alias */
+              if( i + 1 < pAst->nChildren &&
+                  cypherAstIsType(pAst->apChildren[i + 1], CYPHER_AST_NODE_PATTERN) ) {
+                CypherAst *pTargetNode = pAst->apChildren[i + 1];
+                if( pTargetNode->nChildren > 0 &&
+                    cypherAstIsType(pTargetNode->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+                  const char *zTargetAlias = cypherAstGetValue(pTargetNode->apChildren[0]);
+                  if( zTargetAlias ) {
+                    logicalPlanNodeSetAlias(pExpand, zTargetAlias);
+                  }
+                }
+                /* Skip the target node in the loop since we handled it */
+                i++;
+              }
+
+              pLogical = pExpand;
+            }
+          } else {
+            /* Not a relationship - compile as separate element and join */
+            pChild = compileAstNode(pElement, pContext);
+            if( pChild && pLogical ) {
+              LogicalPlanNode *pJoin = logicalPlanNodeCreate(LOGICAL_HASH_JOIN);
+              if( pJoin ) {
+                logicalPlanNodeAddChild(pJoin, pLogical);
+                logicalPlanNodeAddChild(pJoin, pChild);
+                pLogical = pJoin;
+              }
             }
           }
         }
@@ -383,15 +458,30 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       /* Relationship pattern becomes an expand operation */
       pLogical = logicalPlanNodeCreate(LOGICAL_EXPAND);
       if( pLogical ) {
-        /* Extract relationship type if present */
+        /* Extract relationship variable name and type */
+        const char *zVarName = NULL;
+        const char *zRelType = NULL;
+
         for( i = 0; i < pAst->nChildren; i++ ) {
           if( cypherAstIsType(pAst->apChildren[i], CYPHER_AST_IDENTIFIER) ) {
-            const char *zType = cypherAstGetValue(pAst->apChildren[i]);
-            if( zType ) {
-              logicalPlanNodeSetLabel(pLogical, zType);
+            zVarName = cypherAstGetValue(pAst->apChildren[i]);
+          } else if( cypherAstIsType(pAst->apChildren[i], CYPHER_AST_LABELS) ) {
+            /* Get the relationship type from LABELS node */
+            CypherAst *pLabels = pAst->apChildren[i];
+            if( pLabels->zValue ) {
+              zRelType = pLabels->zValue;
             }
-            break;
           }
+        }
+
+        /* Store variable name in zLabel (for relationship variable) */
+        if( zVarName ) {
+          logicalPlanNodeSetLabel(pLogical, zVarName);
+        }
+
+        /* Store relationship type in zProperty */
+        if( zRelType ) {
+          logicalPlanNodeSetProperty(pLogical, zRelType);
         }
       }
       break;
@@ -413,126 +503,102 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       break;
 
     case CYPHER_AST_CREATE:
-      /* CREATE clause becomes a create operation */
+      /* CREATE clause - Build pattern metadata for entire pattern */
+      /* This will be stored in pExtra and processed by the iterator */
+
       pLogical = logicalPlanNodeCreate(LOGICAL_CREATE);
-      if( pLogical ) {
-        /* Extract pattern information for CREATE if present */
-        /* Unlike MATCH, CREATE patterns define new nodes/rels, not scans */
+      if( !pLogical ) break;
 
-        if( pAst->nChildren > 0 ) {
-          CypherAst *pPattern = pAst->apChildren[0];
+      if( pAst->nChildren > 0 ) {
+        CypherAst *pPattern = pAst->apChildren[0];
 
-          /* Navigate through PATTERN to NODE_PATTERN */
-          if( cypherAstIsType(pPattern, CYPHER_AST_PATTERN) ) {
-            if( pPattern->nChildren > 0 ) {
-              pPattern = pPattern->apChildren[0];  /* Get first pattern element */
-            } else {
-              /* Empty PATTERN node - CREATE with no elements */
-              /* This is valid, create anonymous node */
-              break;
-            }
-          }
+        /* Store pattern AST in pExtra - iterator will process it */
+        if( cypherAstIsType(pPattern, CYPHER_AST_PATTERN) ) {
+          pLogical->pExtra = pPattern;
 
-          /* Extract information from NODE_PATTERN */
+          /* For simple single-node case, extract info to main fields too */
+          if( pPattern->nChildren == 1 && cypherAstIsType(pPattern->apChildren[0], CYPHER_AST_NODE_PATTERN) ) {
+            CypherAst *pNode = pPattern->apChildren[0];
 
-          /* If still a PATTERN, descend one more level */
-          while( cypherAstIsType(pPattern, CYPHER_AST_PATTERN) && pPattern->nChildren > 0 ) {
-            pPattern = pPattern->apChildren[0];
-          }
-
-          if( cypherAstIsType(pPattern, CYPHER_AST_NODE_PATTERN) ) {
-          /* Handle empty pattern: CREATE () */
-          /* Empty patterns have no children or only property/label children */
-
-          /* Extract alias if present - first child might be IDENTIFIER */
-          if( pPattern->nChildren > 0 && cypherAstIsType(pPattern->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
-            const char *zAlias = cypherAstGetValue(pPattern->apChildren[0]);
-            if( zAlias ) {
-              logicalPlanNodeSetAlias(pLogical, zAlias);
-            }
-          }
-
-          /* Extract labels if present - might be first or second child depending on alias */
-          for( i = 0; i < pPattern->nChildren; i++ ) {
-            if( cypherAstIsType(pPattern->apChildren[i], CYPHER_AST_LABELS) ) {
-              CypherAst *pLabels = pPattern->apChildren[i];
-
-              /* Label can be in the LABELS node's zValue or in a child */
-              const char *zLabel = NULL;
-
-              if( pLabels->nChildren > 0 ) {
-                /* Get first label from children */
-                zLabel = cypherAstGetValue(pLabels->apChildren[0]);
-              } else {
-                /* Get label from the LABELS node itself */
-                zLabel = cypherAstGetValue(pLabels);
+            /* Extract alias */
+            if( pNode->nChildren > 0 && cypherAstIsType(pNode->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+              const char *zAlias = cypherAstGetValue(pNode->apChildren[0]);
+              if( zAlias ) {
+                logicalPlanNodeSetAlias(pLogical, zAlias);
               }
+            }
 
-              if( zLabel ) {
-                logicalPlanNodeSetLabel(pLogical, zLabel);
+            /* Extract label */
+            for( int j = 0; j < pNode->nChildren; j++ ) {
+              if( cypherAstIsType(pNode->apChildren[j], CYPHER_AST_LABELS) ) {
+                CypherAst *pLabels = pNode->apChildren[j];
+                const char *zLabel = NULL;
+
+                if( pLabels->nChildren > 0 ) {
+                  zLabel = cypherAstGetValue(pLabels->apChildren[0]);
+                } else {
+                  zLabel = cypherAstGetValue(pLabels);
+                }
+
+                if( zLabel ) {
+                  logicalPlanNodeSetLabel(pLogical, zLabel);
+                  break;
+                }
+              }
+            }
+
+            /* Extract properties */
+            for( int j = 0; j < pNode->nChildren; j++ ) {
+              if( cypherAstIsType(pNode->apChildren[j], CYPHER_AST_MAP) ) {
+                CypherAst *pMap = pNode->apChildren[j];
+                char *zJson = sqlite3_mprintf("{");
+                int first = 1;
+
+                for( int k = 0; k < pMap->nChildren; k++ ) {
+                  CypherAst *pPair = pMap->apChildren[k];
+                  if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+
+                  const char *zKey = cypherAstGetValue(pPair);
+                  if( !zKey ) continue;
+
+                  const char *zValue = NULL;
+                  if( pPair->nChildren > 0 ) {
+                    zValue = cypherAstGetValue(pPair->apChildren[0]);
+                  }
+
+                  if( zValue ) {
+                    if( !first ) {
+                      char *zOld = zJson;
+                      zJson = sqlite3_mprintf("%s, ", zOld);
+                      sqlite3_free(zOld);
+                    }
+
+                    char *zOld = zJson;
+                    if( zValue[0] == '\'' || zValue[0] == '"' ) {
+                      int len = strlen(zValue);
+                      char *zUnquoted = sqlite3_mprintf("%.*s", len - 2, zValue + 1);
+                      zJson = sqlite3_mprintf("%s\"%s\": \"%s\"", zOld, zKey, zUnquoted);
+                      sqlite3_free(zUnquoted);
+                    } else {
+                      zJson = sqlite3_mprintf("%s\"%s\": %s", zOld, zKey, zValue);
+                    }
+                    sqlite3_free(zOld);
+                    first = 0;
+                  }
+                }
+
+                char *zOld = zJson;
+                zJson = sqlite3_mprintf("%s}", zOld);
+                sqlite3_free(zOld);
+
+                logicalPlanNodeSetProperty(pLogical, zJson);
+                sqlite3_free(zJson);
                 break;
               }
             }
           }
-
-          /* Extract properties from MAP node if present */
-          for( i = 0; i < pPattern->nChildren; i++ ) {
-            if( cypherAstIsType(pPattern->apChildren[i], CYPHER_AST_MAP) ) {
-              CypherAst *pMap = pPattern->apChildren[i];
-
-              /* Convert MAP to JSON string */
-              char *zJson = sqlite3_mprintf("{");
-              int first = 1;
-
-              for( int j = 0; j < pMap->nChildren; j++ ) {
-                CypherAst *pPair = pMap->apChildren[j];
-                if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
-
-                const char *zKey = cypherAstGetValue(pPair);
-                if( !zKey ) continue;
-
-                /* Get value - should be a LITERAL or expression */
-                const char *zValue = NULL;
-                if( pPair->nChildren > 0 ) {
-                  zValue = cypherAstGetValue(pPair->apChildren[0]);
-                }
-
-                if( zValue ) {
-                  if( !first ) {
-                    char *zOld = zJson;
-                    zJson = sqlite3_mprintf("%s, ", zOld);
-                    sqlite3_free(zOld);
-                  }
-
-                  char *zOld = zJson;
-                  /* Quote string values, pass numbers as-is */
-                  if( zValue[0] == '\'' || zValue[0] == '"' ) {
-                    /* Remove quotes and add proper JSON quotes */
-                    int len = strlen(zValue);
-                    char *zUnquoted = sqlite3_mprintf("%.*s", len - 2, zValue + 1);
-                    zJson = sqlite3_mprintf("%s\"%s\": \"%s\"", zOld, zKey, zUnquoted);
-                    sqlite3_free(zUnquoted);
-                  } else {
-                    /* Numeric value */
-                    zJson = sqlite3_mprintf("%s\"%s\": %s", zOld, zKey, zValue);
-                  }
-                  sqlite3_free(zOld);
-                  first = 0;
-                }
-              }
-
-              char *zOld = zJson;
-              zJson = sqlite3_mprintf("%s}", zOld);
-              sqlite3_free(zOld);
-
-              logicalPlanNodeSetProperty(pLogical, zJson);
-              sqlite3_free(zJson);
-              break;
-            }
-          }
-          }  /* Close NODE_PATTERN if */
-        }    /* Close nChildren > 0 if */
-      }      /* Close pLogical if */
+        }
+      }
       break;
 
     case CYPHER_AST_MERGE:

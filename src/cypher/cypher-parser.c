@@ -56,7 +56,6 @@ static CypherAst *parsePropertyMap(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseListLiteral(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseMapLiteral(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseFunctionCall(CypherLexer *pLexer, CypherParser *pParser, CypherAst *pFunctionName);
-/* static CypherAst *parseRelationshipPattern(CypherLexer *pLexer, CypherParser *pParser); */
 static CypherAst *parseWhereClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseReturnClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseProjectionList(CypherLexer *pLexer, CypherParser *pParser);
@@ -399,14 +398,12 @@ static CypherAst *parseDeleteClause(CypherLexer *pLexer, CypherParser *pParser) 
 }
 
 static CypherAst *parsePatternList(CypherLexer *pLexer, CypherParser *pParser) {
-    CypherAst *pPatternList = cypherAstCreate(CYPHER_AST_PATTERN, 0, 0);
+    /* Just call parsePattern - it already creates the PATTERN wrapper */
     CypherAst *pPattern = parsePattern(pLexer, pParser);
     if (!pPattern) {
-        cypherAstDestroy(pPatternList);
         return NULL;
     }
-    cypherAstAddChild(pPatternList, pPattern);
-    return pPatternList;
+    return pPattern;
 }
 
 static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser) {
@@ -417,6 +414,122 @@ static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser) {
         return NULL;
     }
     cypherAstAddChild(pPattern, pNodePattern);
+
+    /* Check for relationship pattern: (a)-[r:TYPE]->(b) */
+    CypherToken *pNext = parserPeekToken(pLexer);
+    while (pNext && (pNext->type == CYPHER_TOK_DASH ||
+                     pNext->type == CYPHER_TOK_MINUS ||
+                     pNext->type == CYPHER_TOK_ARROW_LEFT ||
+                     pNext->type == CYPHER_TOK_ARROW_RIGHT)) {
+        /* Parse relationship pattern */
+        int iDirection = 0; /* 0=none, 1=right, -1=left */
+
+        /* Check for left arrow */
+        if (pNext->type == CYPHER_TOK_ARROW_LEFT) {
+            parserConsumeToken(pLexer, CYPHER_TOK_ARROW_LEFT);
+            iDirection = -1;
+        } else {
+            /* Consume dash/minus */
+            CypherToken *pDash = NULL;
+            if (pNext->type == CYPHER_TOK_DASH) {
+                pDash = parserConsumeToken(pLexer, CYPHER_TOK_DASH);
+            } else if (pNext->type == CYPHER_TOK_MINUS) {
+                pDash = parserConsumeToken(pLexer, CYPHER_TOK_MINUS);
+            }
+            if (!pDash) {
+                break;
+            }
+        }
+
+        /* Parse [r:TYPE {props}] or just [r] or [:TYPE] */
+        CypherAst *pRelPattern = cypherAstCreate(CYPHER_AST_REL_PATTERN, 0, 0);
+
+        if (!parserConsumeToken(pLexer, CYPHER_TOK_LBRACKET)) {
+            cypherAstDestroy(pRelPattern);
+            parserSetError(pParser, pLexer, "Expected '[' after '-' in relationship pattern");
+            cypherAstDestroy(pPattern);
+            return NULL;
+        }
+
+        /* Optional: variable name */
+        pNext = parserPeekToken(pLexer);
+        if (pNext && pNext->type == CYPHER_TOK_IDENTIFIER) {
+            CypherToken *pId = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+            cypherAstAddChild(pRelPattern, cypherAstCreateIdentifier(pId->text, pId->line, pId->column));
+        }
+
+        /* Optional: relationship type :TYPE */
+        pNext = parserPeekToken(pLexer);
+        if (pNext && pNext->type == CYPHER_TOK_COLON) {
+            parserConsumeToken(pLexer, CYPHER_TOK_COLON);
+            CypherToken *pType = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+            if (!pType) {
+                cypherAstDestroy(pRelPattern);
+                cypherAstDestroy(pPattern);
+                parserSetError(pParser, pLexer, "Expected relationship type after ':'");
+                return NULL;
+            }
+            /* Create a LABELS node to hold the type (reusing label infrastructure) */
+            CypherAst *pTypeNode = cypherAstCreate(CYPHER_AST_LABELS, pType->line, pType->column);
+            char *zType = sqlite3_mprintf("%.*s", pType->len, pType->text);
+            cypherAstSetValue(pTypeNode, zType);
+            sqlite3_free(zType);
+            cypherAstAddChild(pRelPattern, pTypeNode);
+        }
+
+        /* Optional: properties {key: value} */
+        pNext = parserPeekToken(pLexer);
+        if (pNext && pNext->type == CYPHER_TOK_LBRACE) {
+            CypherAst *pProperties = parsePropertyMap(pLexer, pParser);
+            if (pProperties) {
+                cypherAstAddChild(pRelPattern, pProperties);
+            } else if (pParser->zErrorMsg) {
+                cypherAstDestroy(pRelPattern);
+                cypherAstDestroy(pPattern);
+                return NULL;
+            }
+        }
+
+        if (!parserConsumeToken(pLexer, CYPHER_TOK_RBRACKET)) {
+            cypherAstDestroy(pRelPattern);
+            cypherAstDestroy(pPattern);
+            parserSetError(pParser, pLexer, "Expected ']' after relationship pattern");
+            return NULL;
+        }
+
+        /* Check for right arrow */
+        pNext = parserPeekToken(pLexer);
+        if (pNext && pNext->type == CYPHER_TOK_ARROW_RIGHT) {
+            parserConsumeToken(pLexer, CYPHER_TOK_ARROW_RIGHT);
+            if (iDirection == -1) {
+                /* Bidirectional relationship <-[]-> */
+                iDirection = 0;
+            } else {
+                iDirection = 1;
+            }
+        } else if (iDirection == 0) {
+            /* Consume trailing dash if no arrow */
+            parserConsumeToken(pLexer, CYPHER_TOK_DASH);
+        }
+
+        /* Store direction in flags */
+        pRelPattern->iFlags = iDirection;
+
+        cypherAstAddChild(pPattern, pRelPattern);
+
+        /* Parse target node */
+        CypherAst *pTargetNode = parseNodePattern(pLexer, pParser);
+        if (!pTargetNode) {
+            cypherAstDestroy(pPattern);
+            parserSetError(pParser, pLexer, "Expected node pattern after relationship");
+            return NULL;
+        }
+        cypherAstAddChild(pPattern, pTargetNode);
+
+        /* Check for more relationships */
+        pNext = parserPeekToken(pLexer);
+    }
+
     return pPattern;
 }
 
@@ -426,9 +539,17 @@ static CypherAst *parseNodePattern(CypherLexer *pLexer, CypherParser *pParser) {
         return NULL;
     }
     CypherAst *pNodePattern = cypherAstCreate(CYPHER_AST_NODE_PATTERN, 0, 0);
-    CypherToken *pId = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
-    if (pId) {
-        cypherAstAddChild(pNodePattern, cypherAstCreateIdentifier(pId->text, pId->line, pId->column));
+
+    /* Try to parse optional node variable */
+    CypherToken *pPeek = parserPeekToken(pLexer);
+    CypherToken *pId = NULL;
+
+    /* Only consume identifier if next token is not : or ) or { */
+    if (pPeek && pPeek->type == CYPHER_TOK_IDENTIFIER) {
+        pId = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+        if (pId) {
+            cypherAstAddChild(pNodePattern, cypherAstCreateIdentifier(pId->text, pId->line, pId->column));
+        }
     }
 
     CypherAst *pLabels = parseNodeLabels(pLexer, pParser);
@@ -504,25 +625,31 @@ static CypherAst *parsePropertyMap(CypherLexer *pLexer, CypherParser *pParser) {
             cypherAstDestroy(pMap);
             return NULL;
         }
-        
+
+        // IMPORTANT: Copy key text NOW before next token consumption frees it!
+        char *zKeyCopy = sqlite3_mprintf("%s", pKey->text);
+
         // Parse colon
         if (!parserConsumeToken(pLexer, CYPHER_TOK_COLON)) {
             parserSetError(pParser, pLexer, "Expected ':' after property name");
+            sqlite3_free(zKeyCopy);
             cypherAstDestroy(pMap);
             return NULL;
         }
-        
+
         // Parse value - support expressions
         CypherAst *pValue = parseExpression(pLexer, pParser);
         if (!pValue) {
             parserSetError(pParser, pLexer, "Expected property value expression");
+            sqlite3_free(zKeyCopy);
             cypherAstDestroy(pMap);
             return NULL;
         }
-        
+
         // Create property pair
         CypherAst *pPair = cypherAstCreate(CYPHER_AST_PROPERTY_PAIR, pKey->line, pKey->column);
-        cypherAstSetValue(pPair, pKey->text);
+        cypherAstSetValue(pPair, zKeyCopy);  // Use the copy we made earlier
+        sqlite3_free(zKeyCopy);  // cypherAstSetValue makes its own copy, so free ours
         cypherAstAddChild(pPair, pValue);
         cypherAstAddChild(pMap, pPair);
         
@@ -544,39 +671,6 @@ static CypherAst *parsePropertyMap(CypherLexer *pLexer, CypherParser *pParser) {
     return pMap;
 }
 
-/* Currently unused - reserved for future relationship pattern parsing
-static CypherAst *parseRelationshipPattern(CypherLexer *pLexer, CypherParser *pParser) {
-    CypherToken *pArrow = parserConsumeToken(pLexer, CYPHER_TOK_ARROW_RIGHT);
-    if (!pArrow) {
-        pArrow = parserConsumeToken(pLexer, CYPHER_TOK_ARROW_LEFT);
-    }
-    if (!pArrow) {
-        return NULL;
-    }
-
-    CypherAst *pRelPattern = cypherAstCreate(CYPHER_AST_REL_PATTERN, pArrow->line, pArrow->column);
-    cypherAstSetValue(pRelPattern, pArrow->text);
-
-    if (!parserConsumeToken(pLexer, CYPHER_TOK_LBRACKET)) {
-        parserSetError(pParser, pLexer, "Expected [");
-        cypherAstDestroy(pRelPattern);
-        return NULL;
-    }
-
-    CypherToken *pId = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
-    if (pId) {
-        cypherAstAddChild(pRelPattern, cypherAstCreateIdentifier(pId->text, pId->line, pId->column));
-    }
-
-    if (!parserConsumeToken(pLexer, CYPHER_TOK_RBRACKET)) {
-        parserSetError(pParser, pLexer, "Expected ]");
-        cypherAstDestroy(pRelPattern);
-        return NULL;
-    }
-
-    return pRelPattern;
-}
-*/
 
 static CypherAst *parseWhereClause(CypherLexer *pLexer, CypherParser *pParser) {
     if (!parserConsumeToken(pLexer, CYPHER_TOK_WHERE)) {
@@ -699,15 +793,19 @@ static CypherAst *parseComparisonExpression(CypherLexer *pLexer, CypherParser *p
            pToken->type == CYPHER_TOK_GT || pToken->type == CYPHER_TOK_GE ||
            pToken->type == CYPHER_TOK_STARTS_WITH || pToken->type == CYPHER_TOK_ENDS_WITH ||
            pToken->type == CYPHER_TOK_CONTAINS || pToken->type == CYPHER_TOK_IN) {
+        /* Save operator text before it gets overwritten by subsequent parserPeekToken calls */
+        char *zOpText = sqlite3_mprintf("%s", pToken->text);
         parserConsumeToken(pLexer, pToken->type);
         CypherAst *pRight = parseAdditiveExpression(pLexer, pParser);
         if (!pRight) {
             cypherAstDestroy(pLeft);
+            sqlite3_free(zOpText);
             parserSetError(pParser, pLexer, "Expected expression after comparison operator");
             return NULL;
         }
         CypherAst *pCompExpr = cypherAstCreate(CYPHER_AST_COMPARISON, 0, 0);
-        cypherAstSetValue(pCompExpr, pToken->text);
+        cypherAstSetValue(pCompExpr, zOpText);
+        sqlite3_free(zOpText);
         cypherAstAddChild(pCompExpr, pLeft);
         cypherAstAddChild(pCompExpr, pRight);
         pLeft = pCompExpr;

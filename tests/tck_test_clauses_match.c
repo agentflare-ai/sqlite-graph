@@ -18,11 +18,7 @@ void setUp(void) {
     sqlite3_enable_load_extension(db, 1);
     
     // Load graph extension
-    #ifdef __APPLE__
-    rc = sqlite3_load_extension(db, "../build/libgraph.dylib", "sqlite3_graph_init", &error_msg);
-#else
-    rc = sqlite3_load_extension(db, "../build/libgraph.so", "sqlite3_graph_init", &error_msg);
-#endif
+    rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", &error_msg);
     if (rc != SQLITE_OK) {
         printf("Failed to load graph extension: %s\n", error_msg);
         sqlite3_free(error_msg);
@@ -286,27 +282,119 @@ void test_clauses_match_Match1_11(void) {
 }
 
 void test_clauses_match_Match2_01(void) {
-    // Parse/validate test for: [1] Match non-existent relationships returns empty
-    // Feature: Match2 - Match relationships
-    
-    // TODO: Implement parsing/validation test for clauses-match-Match2-01
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-match-Match2-01");
+    // TCK Match2-01: Match non-existent relationships returns empty
+    // Query: MATCH ()-[r]->() RETURN r
+    // Setup: Empty graph (no nodes or edges)
+    // Expected: Empty result set
 
+    // Create graph virtual table (this will create backing tables and initialize pGraph)
+    int rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
+
+    if (rc != SQLITE_OK) {
+        printf("Graph creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
+
+    // Execute MATCH query on empty graph - should return empty result
+    sqlite3_stmt *stmt;
+    const char *query = "SELECT cypher_execute('MATCH (a)-[r]->(b) RETURN r')";
+    rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
+
+    if (rc != SQLITE_OK) {
+        printf("Query prepare failed: %s\n", sqlite3_errmsg(db));
+        TEST_FAIL();
+        return;
+    }
+
+    // Should get one row containing an empty JSON array []
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        printf("Expected result row, got rc=%d, error: %s\n", rc, sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
+
+    const char *result = (const char*)sqlite3_column_text(stmt, 0);
+    if (!result || strcmp(result, "[]") != 0) {
+        printf("Expected empty result '[]', got: '%s'\n", result ? result : "NULL");
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
+
+    sqlite3_finalize(stmt);
+    TEST_PASS();
 }
 
 void test_clauses_match_Match2_02(void) {
-    // Parse/validate test for: [2] Matching a relationship pattern using a label predicate on both sides
-    // Feature: Match2 - Match relationships
-    
-    // TODO: Implement parsing/validation test for clauses-match-Match2-02
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-match-Match2-02");
+    // TCK Match2-02: Matching a relationship pattern using a label predicate on both sides
+    // Query: MATCH (:A)-[r]->(:B) RETURN r
+    // Setup: CREATE (:A)-[:T1]->(:B), (:B)-[:T2]->(:A), (:B)-[:T3]->(:B), (:A)-[:T4]->(:A)
+    // Expected: Returns only [:T1] - the relationship from A to B
 
+    // Create graph
+    int rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
+    if (rc != SQLITE_OK) {
+        printf("Graph creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
+
+    // Create test data using Cypher CREATE (now with label support!)
+    rc = sqlite3_exec(db,
+        "SELECT cypher_execute('CREATE (:A)-[:T1]->(:B)');"
+        "SELECT cypher_execute('CREATE (:B)-[:T2]->(:A)');"
+        "SELECT cypher_execute('CREATE (:B)-[:T3]->(:B)');"
+        "SELECT cypher_execute('CREATE (:A)-[:T4]->(:A)');",
+        NULL, NULL, &error_msg);
+
+    if (rc != SQLITE_OK) {
+        printf("Data creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
+
+    // Execute MATCH query - should return only T1 relationship
+    sqlite3_stmt *stmt;
+    const char *query = "SELECT cypher_execute('MATCH (:A)-[r]->(:B) RETURN r')";
+    rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
+
+    if (rc != SQLITE_OK) {
+        printf("Query prepare failed: %s\n", sqlite3_errmsg(db));
+        TEST_FAIL();
+        return;
+    }
+
+    // Should get one row with one relationship
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        printf("Expected result row, got rc=%d, error: %s\n", rc, sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
+
+    const char *result = (const char*)sqlite3_column_text(stmt, 0);
+    if (!result) {
+        printf("Expected result, got NULL\n");
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
+
+    // Result should be a JSON array with one relationship of type T1
+    // Should contain "T1" somewhere in the result
+    if (strstr(result, "T1") == NULL) {
+        printf("Expected T1 in result, got: %s\n", result);
+        sqlite3_finalize(stmt);
+        TEST_FAIL();
+        return;
+    }
+
+    sqlite3_finalize(stmt);
+    TEST_PASS();
 }
 
 void test_clauses_match_Match2_03(void) {

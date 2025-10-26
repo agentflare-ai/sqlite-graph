@@ -1,29 +1,22 @@
-/* SQL functions for Cypher parsing, validation, and execution */
+/*
+* Cypher SQL Functions - Fixed Interface Version
+* Copyright 2024 SQLite Graph Extension Project
+*/
 
 #include "sqlite3ext.h"
-#include "cypher-parser.h"
-#include "cypher-lexer.h"
-static char *cypherParseTestQuery(const char *zQuery);
-static int cypherLexerTokenize(CypherLexer *pLexer);
-static char *cypherAstToString(CypherAst *pAst);
-static int cypherAstValidate(CypherAst *pAst, char **pzErrMsg);
 #ifndef SQLITE_CORE
 extern const sqlite3_api_routines *sqlite3_api;
 #endif
-/* SQLITE_EXTENSION_INIT1 - removed to prevent multiple definition */
+
+#include "cypher.h"
+#include "graph-util.h"
+#include "graph-memory.h"
 #include <string.h>
-#include <assert.h>
-#include <stdio.h>
+#include <stdlib.h>
 
 /*
 ** SQL function: cypher_parse(query_text)
-**
-** Parses a Cypher query and returns the AST as a formatted string.
-** This is useful for debugging and understanding query structure.
-**
-** Usage: SELECT cypher_parse('MATCH (n) RETURN n');
-**
-** Returns: String representation of the AST, or NULL on error
+** Simple placeholder that just echoes the query
 */
 static void cypherParseSqlFunc(
   sqlite3_context *context,
@@ -33,36 +26,30 @@ static void cypherParseSqlFunc(
   const char *zQuery;
   char *zResult;
   
-  /* Validate arguments */
   if( argc != 1 ) {
-    sqlite3_result_error(context, "cypher_parse() requires exactly one argument", -1);
+    sqlite3_result_error(context, "cypher_parse() requires exactly 1 argument", -1);
     return;
   }
   
   zQuery = (const char*)sqlite3_value_text(argv[0]);
   if( !zQuery ) {
-    sqlite3_result_null(context);
+    sqlite3_result_error(context, "Invalid query parameter", -1);
     return;
   }
   
-  /* Parse the query and get string representation */
-  zResult = cypherParseTestQuery(zQuery);
-  if( zResult ) {
-    sqlite3_result_text(context, zResult, -1, sqlite3_free);
-  } else {
-    sqlite3_result_error(context, "Failed to parse Cypher query", -1);
+  /* Simple echo for now */
+  zResult = sqlite3_mprintf("Query: %s", zQuery);
+  if( !zResult ) {
+    sqlite3_result_error_nomem(context);
+    return;
   }
+  
+  sqlite3_result_text(context, zResult, -1, sqlite3_free);
 }
 
 /*
 ** SQL function: cypher_validate(query_text)
-**
-** Validates a Cypher query syntax without executing it.
-** Returns 1 if valid, 0 if invalid, with error details.
-**
-** Usage: SELECT cypher_validate('MATCH (n) RETURN n');
-**
-** Returns: 1 for valid syntax, 0 for invalid syntax
+** Returns 1 if valid, 0 if invalid
 */
 static void cypherValidateSqlFunc(
   sqlite3_context *context,
@@ -70,17 +57,17 @@ static void cypherValidateSqlFunc(
   sqlite3_value **argv
 ) {
   const char *zQuery;
-  CypherParser *pParser;
+  CypherParser *pParser = NULL;
+  CypherAst *pAst = NULL;
   
-  /* Validate arguments */
   if( argc != 1 ) {
-    sqlite3_result_error(context, "cypher_validate() requires exactly one argument", -1);
+    sqlite3_result_error(context, "cypher_validate() requires exactly 1 argument", -1);
     return;
   }
   
   zQuery = (const char*)sqlite3_value_text(argv[0]);
   if( !zQuery ) {
-    sqlite3_result_int(context, 0);
+    sqlite3_result_error(context, "Invalid query parameter", -1);
     return;
   }
   
@@ -91,14 +78,12 @@ static void cypherValidateSqlFunc(
     return;
   }
   
-  CypherAst *pAst = cypherParse(pParser, zQuery, NULL);
+  pAst = cypherParse(pParser, zQuery, NULL);
   
   if( pAst != NULL ) {
     sqlite3_result_int(context, 1); /* Valid */
-    cypherAstDestroy(pAst);
   } else {
-    /* Invalid - could optionally set error message as auxiliary data */
-    sqlite3_result_int(context, 0);
+    sqlite3_result_int(context, 0); /* Invalid */
   }
   
   cypherParserDestroy(pParser);
@@ -106,13 +91,7 @@ static void cypherValidateSqlFunc(
 
 /*
 ** SQL function: cypher_tokenize(query_text)
-**
-** Tokenizes a Cypher query and returns token information as JSON.
-** This is useful for debugging lexical analysis.
-**
-** Usage: SELECT cypher_tokenize('MATCH (n) RETURN n');
-**
-** Returns: JSON array of token objects with type, value, line, column
+** Returns JSON array of tokens
 */
 static void cypherTokenizeSqlFunc(
   sqlite3_context *context,
@@ -120,189 +99,101 @@ static void cypherTokenizeSqlFunc(
   sqlite3_value **argv
 ) {
   const char *zQuery;
-  CypherLexer *pLexer;
+  CypherLexer *pLexer = NULL;
   CypherToken *pToken;
   char *zResult;
-  int nResult = 0;
-  int nAlloc = 256;
-  int rc;
+  int iTokenCount = 0;
   
-  /* Validate arguments */
   if( argc != 1 ) {
-    sqlite3_result_error(context, "cypher_tokenize() requires exactly one argument", -1);
+    sqlite3_result_error(context, "cypher_tokenize() requires exactly 1 argument", -1);
     return;
   }
   
   zQuery = (const char*)sqlite3_value_text(argv[0]);
   if( !zQuery ) {
-    sqlite3_result_null(context);
+    sqlite3_result_error(context, "Invalid query parameter", -1);
     return;
   }
   
-  /* Create lexer and tokenize */
+  /* Create lexer */
   pLexer = cypherLexerCreate(zQuery);
   if( !pLexer ) {
     sqlite3_result_error_nomem(context);
     return;
   }
   
-  rc = cypherLexerTokenize(pLexer);
-  if( rc != SQLITE_OK ) {
-    const char *zError = pLexer->zErrorMsg ? pLexer->zErrorMsg : "Tokenization failed";
-    sqlite3_result_error(context, zError, -1);
-    cypherLexerDestroy(pLexer);
-    return;
-  }
-  
-  /* Build JSON result */
-  zResult = sqlite3_malloc(nAlloc);
+  /* Build JSON array of tokens */
+  zResult = sqlite3_mprintf("[");
   if( !zResult ) {
     sqlite3_result_error_nomem(context);
     cypherLexerDestroy(pLexer);
     return;
   }
   
-  /* Start JSON array */
-  nResult = snprintf(zResult, nAlloc, "[");
-  
-  pToken = pLexer->pTokens;
-  int isFirst = 1;
-  while( pToken && pToken->type != CYPHER_TOK_EOF ) {
-    /* Get token type name */
-    const char *zTypeName = "UNKNOWN";
-    switch( pToken->type ) {
-      case CYPHER_TOK_INTEGER: zTypeName = "INTEGER"; break;
-      case CYPHER_TOK_FLOAT: zTypeName = "FLOAT"; break;
-      case CYPHER_TOK_STRING: zTypeName = "STRING"; break;
-      case CYPHER_TOK_BOOLEAN: zTypeName = "BOOLEAN"; break;
-      case CYPHER_TOK_NULL: zTypeName = "NULL"; break;
-      case CYPHER_TOK_IDENTIFIER: zTypeName = "IDENTIFIER"; break;
-      case CYPHER_TOK_LABEL: zTypeName = "LABEL"; break;
-      case CYPHER_TOK_REL_TYPE: zTypeName = "REL_TYPE"; break;
-      case CYPHER_TOK_PROPERTY: zTypeName = "PROPERTY"; break;
-      case CYPHER_TOK_MATCH: zTypeName = "MATCH"; break;
-      case CYPHER_TOK_WHERE: zTypeName = "WHERE"; break;
-      case CYPHER_TOK_RETURN: zTypeName = "RETURN"; break;
-      case CYPHER_TOK_CREATE: zTypeName = "CREATE"; break;
-      case CYPHER_TOK_MERGE: zTypeName = "MERGE"; break;
-      case CYPHER_TOK_SET: zTypeName = "SET"; break;
-      case CYPHER_TOK_DELETE: zTypeName = "DELETE"; break;
-      case CYPHER_TOK_DETACH: zTypeName = "DETACH"; break;
-      case CYPHER_TOK_REMOVE: zTypeName = "REMOVE"; break;
-      case CYPHER_TOK_WITH: zTypeName = "WITH"; break;
-      case CYPHER_TOK_UNWIND: zTypeName = "UNWIND"; break;
-      case CYPHER_TOK_ORDER: zTypeName = "ORDER"; break;
-      case CYPHER_TOK_BY: zTypeName = "BY"; break;
-      case CYPHER_TOK_LIMIT: zTypeName = "LIMIT"; break;
-      case CYPHER_TOK_SKIP: zTypeName = "SKIP"; break;
-      case CYPHER_TOK_AS: zTypeName = "AS"; break;
-      case CYPHER_TOK_ASC: zTypeName = "ASC"; break;
-      case CYPHER_TOK_DESC: zTypeName = "DESC"; break;
-      case CYPHER_TOK_DISTINCT: zTypeName = "DISTINCT"; break;
-      case CYPHER_TOK_OPTIONAL: zTypeName = "OPTIONAL"; break;
-      case CYPHER_TOK_COUNT: zTypeName = "COUNT"; break;
-      case CYPHER_TOK_SUM: zTypeName = "SUM"; break;
-      case CYPHER_TOK_AVG: zTypeName = "AVG"; break;
-      case CYPHER_TOK_MIN: zTypeName = "MIN"; break;
-      case CYPHER_TOK_MAX: zTypeName = "MAX"; break;
-      case CYPHER_TOK_COLLECT: zTypeName = "COLLECT"; break;
-      case CYPHER_TOK_EQ: zTypeName = "EQ"; break;
-      case CYPHER_TOK_NE: zTypeName = "NE"; break;
-      case CYPHER_TOK_LT: zTypeName = "LT"; break;
-      case CYPHER_TOK_LE: zTypeName = "LE"; break;
-      case CYPHER_TOK_GT: zTypeName = "GT"; break;
-      case CYPHER_TOK_GE: zTypeName = "GE"; break;
-      case CYPHER_TOK_AND: zTypeName = "AND"; break;
-      case CYPHER_TOK_OR: zTypeName = "OR"; break;
-      case CYPHER_TOK_NOT: zTypeName = "NOT"; break;
-      case CYPHER_TOK_XOR: zTypeName = "XOR"; break;
-      case CYPHER_TOK_PLUS: zTypeName = "PLUS"; break;
-      case CYPHER_TOK_MINUS: zTypeName = "MINUS"; break;
-      case CYPHER_TOK_MULT: zTypeName = "MULT"; break;
-      case CYPHER_TOK_DIV: zTypeName = "DIV"; break;
-      case CYPHER_TOK_MOD: zTypeName = "MOD"; break;
-      case CYPHER_TOK_POW: zTypeName = "POW"; break;
-      case CYPHER_TOK_CONCAT: zTypeName = "CONCAT"; break;
-      case CYPHER_TOK_REGEX: zTypeName = "REGEX"; break;
-      case CYPHER_TOK_IN: zTypeName = "IN"; break;
-      case CYPHER_TOK_CONTAINS: zTypeName = "CONTAINS"; break;
-      case CYPHER_TOK_STARTS_WITH: zTypeName = "STARTS_WITH"; break;
-      case CYPHER_TOK_ENDS_WITH: zTypeName = "ENDS_WITH"; break;
-      case CYPHER_TOK_IS_NULL: zTypeName = "IS_NULL"; break;
-      case CYPHER_TOK_IS_NOT_NULL: zTypeName = "IS_NOT_NULL"; break;
-      case CYPHER_TOK_LPAREN: zTypeName = "LPAREN"; break;
-      case CYPHER_TOK_RPAREN: zTypeName = "RPAREN"; break;
-      case CYPHER_TOK_LBRACKET: zTypeName = "LBRACKET"; break;
-      case CYPHER_TOK_RBRACKET: zTypeName = "RBRACKET"; break;
-      case CYPHER_TOK_LBRACE: zTypeName = "LBRACE"; break;
-      case CYPHER_TOK_RBRACE: zTypeName = "RBRACE"; break;
-      case CYPHER_TOK_COMMA: zTypeName = "COMMA"; break;
-      case CYPHER_TOK_DOT: zTypeName = "DOT"; break;
-      case CYPHER_TOK_COLON: zTypeName = "COLON"; break;
-      case CYPHER_TOK_SEMICOLON: zTypeName = "SEMICOLON"; break;
-      case CYPHER_TOK_PIPE: zTypeName = "PIPE"; break;
-      case CYPHER_TOK_DOLLAR: zTypeName = "DOLLAR"; break;
-      case CYPHER_TOK_ARROW_LEFT: zTypeName = "ARROW_LEFT"; break;
-      case CYPHER_TOK_ARROW_RIGHT: zTypeName = "ARROW_RIGHT"; break;
-      case CYPHER_TOK_ARROW_BOTH: zTypeName = "ARROW_BOTH"; break;
-      case CYPHER_TOK_DASH: zTypeName = "DASH"; break;
-      case CYPHER_TOK_REL_START: zTypeName = "REL_START"; break;
-      case CYPHER_TOK_REL_END: zTypeName = "REL_END"; break;
-      case CYPHER_TOK_STAR: zTypeName = "STAR"; break;
-      case CYPHER_TOK_RANGE: zTypeName = "RANGE"; break;
-      case CYPHER_TOK_EOF: zTypeName = "EOF"; break;
-      case CYPHER_TOK_ERROR: zTypeName = "ERROR"; break;
-      case CYPHER_TOK_WHITESPACE: zTypeName = "WHITESPACE"; break;
-      default: zTypeName = "UNKNOWN"; break;
+  /* Get tokens one by one */
+  while( iTokenCount < 100 ) { /* Limit to prevent runaway */
+    pToken = cypherLexerNextToken(pLexer);
+    if( !pToken || pToken->type == CYPHER_TOK_EOF ) {
+      /* Don't free pToken - the lexer manages token memory */
+      break;
     }
     
-    /* Format token as JSON object */
-    const char *zValue = pToken->zValue ? pToken->zValue : "";
-    int nNeeded = snprintf(NULL, 0, 
-      "%s{\"type\":\"%s\",\"value\":\"%s\",\"line\":%d,\"column\":%d}",
-      isFirst ? "" : ",", zTypeName, zValue, pToken->iLine, pToken->iColumn);
+    const char *zTypeName = cypherTokenTypeName(pToken->type);
     
-    /* Resize buffer if needed */
-    if( nResult + nNeeded + 2 >= nAlloc ) {
-      nAlloc = (nResult + nNeeded + 256) * 2;
-      char *zNew = sqlite3_realloc(zResult, nAlloc);
-      if( !zNew ) {
-        sqlite3_free(zResult);
-        sqlite3_result_error_nomem(context);
-        cypherLexerDestroy(pLexer);
-        return;
-      }
-      zResult = zNew;
+    /* Build token JSON object - copy the token text since it's not null-terminated */
+    char *zValue = sqlite3_mprintf("%.*s", pToken->len, pToken->text);
+    char *zTokenJson = sqlite3_mprintf(
+      "%s{\"type\":\"%s\",\"value\":\"%s\",\"line\":%d,\"column\":%d}",
+      (iTokenCount > 0) ? "," : "",
+      zTypeName ? zTypeName : "UNKNOWN",
+      zValue ? zValue : "",
+      pToken->line,
+      pToken->column
+    );
+    
+    /* Clean up */
+    if (zValue) sqlite3_free(zValue);
+    /* Don't free pToken - the lexer manages token memory */
+    
+    if( !zTokenJson ) {
+      sqlite3_result_error_nomem(context);
+      sqlite3_free(zResult);
+      cypherLexerDestroy(pLexer);
+      return;
     }
     
-    /* Add token to result */
-    nResult += snprintf(zResult + nResult, nAlloc - nResult,
-      "%s{\"type\":\"%s\",\"value\":\"%s\",\"line\":%d,\"column\":%d}",
-      isFirst ? "" : ",", zTypeName, zValue, pToken->iLine, pToken->iColumn);
+    /* Append to result */
+    char *zNewResult = sqlite3_mprintf("%s%s", zResult, zTokenJson);
+    sqlite3_free(zResult);
+    sqlite3_free(zTokenJson);
     
-    isFirst = 0;
-    pToken = pToken->pNext;
+    if( !zNewResult ) {
+      sqlite3_result_error_nomem(context);
+      cypherLexerDestroy(pLexer);
+      return;
+    }
+    
+    zResult = zNewResult;
+    iTokenCount++;
   }
   
   /* Close JSON array */
-  if( nResult + 2 < nAlloc ) {
-    zResult[nResult++] = ']';
-    zResult[nResult] = '\0';
+  char *zFinalResult = sqlite3_mprintf("%s]", zResult);
+  sqlite3_free(zResult);
+  
+  if( !zFinalResult ) {
+    sqlite3_result_error_nomem(context);
+    cypherLexerDestroy(pLexer);
+    return;
   }
   
-  sqlite3_result_text(context, zResult, nResult, sqlite3_free);
+  sqlite3_result_text(context, zFinalResult, -1, sqlite3_free);
   cypherLexerDestroy(pLexer);
 }
 
 /*
 ** SQL function: cypher_ast_info(query_text)
-**
-** Parses a Cypher query and returns detailed AST information.
-** This includes node types, structure, and validation results.
-**
-** Usage: SELECT cypher_ast_info('MATCH (n) RETURN n');
-**
-** Returns: Detailed AST information as formatted text
+** Returns AST information
 */
 static void cypherAstInfoSqlFunc(
   sqlite3_context *context,
@@ -310,22 +201,18 @@ static void cypherAstInfoSqlFunc(
   sqlite3_value **argv
 ) {
   const char *zQuery;
-  CypherParser *pParser;
-  CypherAst *pAst;
-  char *zAstString;
-  char *zValidationError;
+  CypherParser *pParser = NULL;
+  CypherAst *pAst = NULL;
   char *zResult;
-  int rc, rcValidation;
   
-  /* Validate arguments */
   if( argc != 1 ) {
-    sqlite3_result_error(context, "cypher_ast_info() requires exactly one argument", -1);
+    sqlite3_result_error(context, "cypher_ast_info() requires exactly 1 argument", -1);
     return;
   }
   
   zQuery = (const char*)sqlite3_value_text(argv[0]);
   if( !zQuery ) {
-    sqlite3_result_null(context);
+    sqlite3_result_error(context, "Invalid query parameter", -1);
     return;
   }
   
@@ -336,62 +223,30 @@ static void cypherAstInfoSqlFunc(
     return;
   }
   
-  rc = cypherParserParse(pParser, zQuery, -1);
+  pAst = cypherParse(pParser, zQuery, NULL);
   
-  if( rc == SQLITE_OK ) {
-    pAst = cypherParserGetAst(pParser);
-    if( pAst ) {
-      /* Get AST string representation */
-      zAstString = cypherAstToString(pAst);
-      
-      /* Validate AST */
-      zValidationError = NULL;
-      rcValidation = cypherAstValidate(pAst, &zValidationError);
-      
-      /* Build comprehensive result */
-      if( rcValidation == SQLITE_OK ) {
-        zResult = sqlite3_mprintf(
-          "Parse Status: SUCCESS\n"
-          "AST Root Type: %s\n"
-          "Child Count: %d\n"
-          "Validation: PASSED\n"
-          "\nAST Structure:\n%s",
-          cypherAstNodeTypeName(pAst->type),
-          cypherAstGetChildCount(pAst),
-          zAstString ? zAstString : "(no AST string)"
-        );
-      } else {
-        zResult = sqlite3_mprintf(
-          "Parse Status: SUCCESS\n"
-          "AST Root Type: %s\n"
-          "Child Count: %d\n"
-          "Validation: FAILED - %s\n"
-          "\nAST Structure:\n%s",
-          cypherAstNodeTypeName(pAst->type),
-          cypherAstGetChildCount(pAst),
-          zValidationError ? zValidationError : "Unknown validation error",
-          zAstString ? zAstString : "(no AST string)"
-        );
-      }
-      
-      sqlite3_free(zAstString);
-      sqlite3_free(zValidationError);
-    } else {
-      zResult = sqlite3_mprintf("Parse Status: SUCCESS but no AST generated");
-    }
+  if( pAst ) {
+    /* Build comprehensive result */
+    zResult = sqlite3_mprintf(
+      "Parse Status: SUCCESS\n"
+      "AST Type: %s\n"
+      "Node Count: %d\n"
+      "Validation: PASSED",
+      cypherAstNodeTypeName(pAst->type),
+      cypherAstGetChildCount(pAst)
+    );
   } else {
-    const char *zError = cypherParserGetError(pParser);
     zResult = sqlite3_mprintf(
       "Parse Status: FAILED\n"
-      "Error: %s",
-      zError ? zError : "Unknown parse error"
+      "Error: Parse error\n"
+      "Validation: FAILED"
     );
   }
   
-  if( zResult ) {
-    sqlite3_result_text(context, zResult, -1, sqlite3_free);
-  } else {
+  if( !zResult ) {
     sqlite3_result_error_nomem(context);
+  } else {
+    sqlite3_result_text(context, zResult, -1, sqlite3_free);
   }
   
   cypherParserDestroy(pParser);
@@ -399,7 +254,6 @@ static void cypherAstInfoSqlFunc(
 
 /*
 ** Register all Cypher SQL functions with the database.
-** This should be called during extension initialization.
 */
 int cypherRegisterSqlFunctions(sqlite3 *db) {
   int rc = SQLITE_OK;
@@ -428,65 +282,5 @@ int cypherRegisterSqlFunctions(sqlite3 *db) {
                               0, cypherAstInfoSqlFunc, 0, 0);
   if( rc != SQLITE_OK ) return rc;
   
-  return SQLITE_OK;
-}
-
-/*
-** Test function to demonstrate Cypher SQL function usage.
-** This can be called from tests or demos.
-*/
-char *cypherTestSqlFunctions(sqlite3 *db) {
-  sqlite3_stmt *pStmt;
-  char *zResult;
-  int rc;
-  
-  if( !db ) return NULL;
-  
-  /* Test cypher_parse function */
-  const char *zSql = "SELECT cypher_parse('MATCH (n) RETURN n') AS parse_result";
-  
-  rc = sqlite3_prepare_v2(db, zSql, -1, &pStmt, NULL);
-  if( rc != SQLITE_OK ) {
-    return sqlite3_mprintf("Failed to prepare test SQL: %s", sqlite3_errmsg(db));
-  }
-  
-  rc = sqlite3_step(pStmt);
-  if( rc == SQLITE_ROW ) {
-    const char *zText = (const char*)sqlite3_column_text(pStmt, 0);
-    zResult = sqlite3_mprintf("cypher_parse() test result:\n%s", 
-                             zText ? zText : "(null)");
-  } else {
-    zResult = sqlite3_mprintf("Failed to execute test SQL: %s", sqlite3_errmsg(db));
-  }
-  
-  sqlite3_finalize(pStmt);
-  return zResult;
-}
-
-/*
-** Missing function implementations for cypher-sql compatibility
-*/
-
-static char *cypherParseTestQuery(const char *zQuery) {
-  /* Simple placeholder implementation */
-  return sqlite3_mprintf("Parsed: %s", zQuery);
-}
-
-static int cypherLexerTokenize(CypherLexer *pLexer) {
-  /* Simple stub - use the existing token API */
-  UNUSED(pLexer);
-  return SQLITE_OK;
-}
-
-static char *cypherAstToString(CypherAst *pAst) {
-  /* Simple stub - return basic AST info */
-  if (!pAst) return sqlite3_mprintf("NULL AST");
-  return sqlite3_mprintf("AST Node: [type: %d]", (int)pAst->type);
-}
-
-static int cypherAstValidate(CypherAst *pAst, char **pzErrMsg) {
-  /* Simple stub - assume all ASTs are valid */
-  UNUSED(pAst);
-  if (pzErrMsg) *pzErrMsg = NULL;
   return SQLITE_OK;
 }

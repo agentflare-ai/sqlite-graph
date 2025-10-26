@@ -649,7 +649,7 @@ char *cypherResultToJson(CypherResult *pResult) {
   
   /* Start JSON object */
   nResult = snprintf(zResult, nAlloc, "{");
-  
+
   for( i = 0; i < pResult->nColumns; i++ ) {
     zValue = cypherValueToString(&pResult->aValues[i]);
     if( !zValue ) {

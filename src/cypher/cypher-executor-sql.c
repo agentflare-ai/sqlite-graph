@@ -9,6 +9,7 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include "graph.h"  /* For GraphVtab and extern pGraph */
 #include <string.h>
 #include <assert.h>
+#include <stdio.h>
 
 /* External reference to global graph virtual table */
 extern GraphVtab *pGraph;
@@ -124,6 +125,7 @@ static void cypherExecuteSqlFunc(
   }
   
   rc = cypherExecutorExecute(pExecutor, &zResults);
+
   if( rc != SQLITE_OK ) {
     const char *zError = cypherExecutorGetError(pExecutor);
     sqlite3_result_error(context, zError ? zError : "Execution error", -1);
@@ -132,7 +134,7 @@ static void cypherExecuteSqlFunc(
   } else {
     sqlite3_result_text(context, "[]", -1, SQLITE_STATIC);
   }
-  
+
   cypherExecutorDestroy(pExecutor);
   cypherPlannerDestroy(pPlanner);
   cypherParserDestroy(pParser);

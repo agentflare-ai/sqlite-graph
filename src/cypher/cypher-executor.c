@@ -189,22 +189,22 @@ int cypherExecutorExecute(CypherExecutor *pExecutor, char **pzResults) {
       break;
     }
   }
-  
+
   /* Close iterator */
   pRoot->xClose(pRoot);
-  
+
   if( rc == SQLITE_OK ) {
     /* Close JSON array */
     if( nUsed + 2 < nAllocated ) {
       zResultArray[nUsed++] = ']';
       zResultArray[nUsed] = '\0';
     }
-    
+
     *pzResults = zResultArray;
   } else {
     sqlite3_free(zResultArray);
   }
-  
+
   return rc;
 }
 

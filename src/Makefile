@@ -34,10 +34,8 @@ LDFLAGS = -lm
 BUILD_DIR = ../build
 OBJ_DIR = $(BUILD_DIR)/obj/src
 
-# Source files - include all C files except problematic ones  
-SRCS = $(filter-out cypher/cypher-sql.c, $(wildcard *.c) $(wildcard cypher/*.c))
-# Add the fixed cypher SQL functions
-SRCS += cypher/cypher-sql-fixed.c
+# Source files - include all C files
+SRCS = $(wildcard *.c) $(wildcard cypher/*.c)
 SRCS += graph-vtab.c
 SRCS += graph-memory.c
 SRCS += graph-destructors.c

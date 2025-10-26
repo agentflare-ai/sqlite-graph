@@ -84,6 +84,9 @@ typedef enum {
   PHYSICAL_NESTED_LOOP_JOIN,   /* Nested loop with outer/inner tables */
   PHYSICAL_INDEX_NESTED_LOOP,  /* Index-assisted nested loop */
 
+  /* Expansion Operators */
+  PHYSICAL_EXPAND,             /* Relationship traversal/expansion */
+
   /* Other Operators */
   PHYSICAL_FILTER,             /* Predicate evaluation */
   PHYSICAL_PROJECTION,         /* Column projection */
@@ -134,28 +137,31 @@ typedef struct LogicalPlanNode {
 typedef struct PhysicalPlanNode {
   PhysicalOperatorType type;    /* Physical operator type */
   char *zAlias;                 /* Variable name/alias */
-  
+
   /* Operator-specific parameters */
   char *zIndexName;             /* Index to use (if any) */
   char *zLabel;                 /* Label for scans */
   char *zProperty;              /* Property for filters/indexes */
   char *zValue;                 /* Filter value */
-  
+
   /* Child operators */
   struct PhysicalPlanNode **apChildren;
   struct PhysicalPlanNode *pChild;     /* Primary child (for single-child operators) */
   int nChildren;
   int nChildrenAlloc;
-  
+
   /* Filter and projection expressions */
   struct CypherExpression *pFilterExpr;      /* Filter expression */
   struct CypherExpression **apProjections;   /* Projection expressions */
   int nProjections;                          /* Number of projections */
-  
+
   /* Sort and limit parameters */
   struct CypherExpression **apSortKeys;      /* Sort key expressions */
   int nSortKeys;                             /* Number of sort keys */
   int nLimit;                                /* LIMIT value */
+
+  /* Additional metadata */
+  void *pExtra;                              /* Type-specific extra data (e.g., pattern AST for CREATE) */
   
   /* Cost and statistics */
   double rCost;                 /* Actual estimated cost */

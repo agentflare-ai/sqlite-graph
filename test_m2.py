@@ -1,0 +1,10 @@
+import sqlite3
+db = sqlite3.connect(':memory:')
+db.enable_load_extension(True)
+db.load_extension('./build/libgraph')
+db.execute("CREATE VIRTUAL TABLE graph USING graph()")
+print("Creating data...")
+db.execute("SELECT cypher_execute('CREATE (:A)-[:T1]->(:B)')")
+print("Query: MATCH (:A)-[r]->(:B) RETURN r")
+r = db.execute("SELECT cypher_execute('MATCH (:A)-[r]->(:B) RETURN r')").fetchone()
+print(r[0])
