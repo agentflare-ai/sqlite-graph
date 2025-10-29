@@ -14,11 +14,14 @@ A powerful SQLite extension that adds graph database capabilities with full Cyph
 
 ### ✅ Working Features
 - **Core Graph Operations**: Create, read, update, delete nodes and edges via SQL functions
-- **Cypher Query Execution** (NEW!): Basic Cypher queries now work end-to-end
+- **Cypher Query Execution** (NEW!): Full basic Cypher support working end-to-end
   - `CREATE (n)` - Create anonymous nodes ✅
-  - `CREATE (p:Person)` - Create nodes with labels ✅
+  - `CREATE (p:Person {name: "Alice"})` - Create nodes with labels and properties ✅
+  - `CREATE (a)-[:TYPE]->(b)` - Create relationships ✅
+  - `CREATE (a)-[:TYPE {props}]->(b)` - Create relationships with properties ✅
   - `MATCH (n) RETURN n` - Basic pattern matching ✅
   - `MATCH (n:Label) RETURN n` - Label-based matching ✅
+  - `MATCH (a)-[r:TYPE]->(b) RETURN a, r, b` - Relationship matching ✅
   - `MATCH (n) WHERE n.prop > value RETURN n` - Property filtering ✅
   - WHERE clause with all comparison operators: `=, >, <, >=, <=, <>` ✅
   - Full execution pipeline: parser → logical planner → physical planner → executor ✅
@@ -33,9 +36,10 @@ A powerful SQLite extension that adds graph database capabilities with full Cyph
 
 ### 🚧 In Progress
 - **Advanced Cypher Features**:
-  - Relationship matching (edges/patterns)
+  - Bidirectional/reverse relationship matching (`<-[r]-`, `-[r]-`)
+  - Variable-length paths (`[r*1..3]`)
   - Complex expressions in WHERE (AND, OR, NOT)
-  - Property expressions in RETURN
+  - Property expressions in RETURN (n.property)
   - Aggregations (COUNT, SUM, etc.)
   - ORDER BY, SKIP, LIMIT
 - **Graph Algorithms**: Shortest path, PageRank (implementation incomplete)
@@ -98,15 +102,24 @@ conn.load_extension("./build/libgraph.so")
 conn.execute("CREATE VIRTUAL TABLE graph USING graph()")
 
 # Option 1: Use Cypher queries (NEW!)
-conn.execute("SELECT cypher_execute('CREATE (p:Person {name: \"Alice\"})')")
+# Create nodes with properties
+conn.execute("SELECT cypher_execute('CREATE (p:Person {name: \"Alice\", age: 30})')")
 conn.execute("SELECT cypher_execute('CREATE (c:Company {name: \"Acme Inc\"})')")
+
+# Create relationships with properties
+conn.execute("SELECT cypher_execute('CREATE (a:Person {name: \"Bob\"})-[:KNOWS {since: 2020}]->(b:Person {name: \"Charlie\"})')")
 
 # Query with MATCH...RETURN
 cursor = conn.execute("SELECT cypher_execute('MATCH (n:Person) RETURN n')")
 results = json.loads(cursor.fetchone()[0])
-print(results)  # [{"n": Node(1)}]
+print(results)  # [{"n": Node(1)}, {"n": Node(2)}, ...]
 
-# Filter with WHERE clause (NEW!)
+# Query relationships
+cursor = conn.execute("SELECT cypher_execute('MATCH (a)-[r:KNOWS]->(b) RETURN a, r, b')")
+results = json.loads(cursor.fetchone()[0])
+print(results)  # Returns matching relationships with nodes
+
+# Filter with WHERE clause
 cursor = conn.execute("SELECT cypher_execute('MATCH (p:Person) WHERE p.age > 25 RETURN p')")
 results = json.loads(cursor.fetchone()[0])
 print(results)  # Returns nodes where age > 25
@@ -141,7 +154,7 @@ See the `examples/` directory for fully functional demonstrations:
 - **python_examples.py** - 6 comprehensive examples showcasing all working features
 - **cypher_demo.py** - NEW! Cypher CREATE query examples
 
-> **Note**: Basic Cypher queries now work! CREATE, MATCH, WHERE, and RETURN operations are functional. Advanced pattern matching and relationship queries are in development for v0.2.0. The alpha version also provides SQL function-based graph operations.
+> **Note**: Basic Cypher queries fully work! CREATE, MATCH, WHERE, and RETURN operations are functional, including relationship creation and matching. You can now build complete graph applications using only Cypher. Advanced features like bidirectional matching, variable-length paths, and aggregations are in development for v0.2.0. The alpha version also provides SQL function-based graph operations for advanced use cases.
 
 ## Documentation
 
@@ -152,9 +165,9 @@ See the `examples/` directory for fully functional demonstrations:
 - [Examples](examples/) - Working code examples (simple_graph_example.py, python_examples.py)
 
 ### Project Status (Alpha v0.1.0)
-✅ **What Works**: Node/edge creation, basic Cypher CREATE, basic algorithms, Python bindings
-🚧 **In Progress**: MATCH queries, RETURN clause, property support in CREATE
-📋 **Planned**: Full Cypher support (Q1 2026), advanced algorithms (Q2 2026)
+✅ **What Works**: Node/edge creation, full Cypher CREATE/MATCH/WHERE/RETURN, relationships with properties, basic algorithms, Python bindings
+🚧 **In Progress**: Advanced MATCH features (bidirectional, variable-length paths), property projection in RETURN, aggregations
+📋 **Planned**: Full Cypher compliance (Q1 2026), advanced algorithms (Q2 2026), query optimization
 
 ## Architecture (Alpha Implementation)
 
@@ -163,13 +176,17 @@ The extension currently consists of:
 - ✅ **Virtual Table Interface**: SQLite virtual table implementation for graph operations
 - ✅ **Storage Engine**: Efficient node/edge storage with JSON properties
 - ✅ **Algorithm Library**: Basic graph algorithms (connectivity, density, centrality)
-- ✅ **Cypher Execution Engine**: Parser → Planner → Iterator-based Executor (NEW!)
+- ✅ **Cypher Execution Engine**: Parser → Planner → Iterator-based Executor
   - ✅ Lexer and Parser (AST generation)
   - ✅ Logical Plan generation
   - ✅ Physical Plan optimization
   - ✅ Volcano-model iterators
   - ✅ Result serialization
-- 🚧 **Cypher Operators**: CREATE working, MATCH/RETURN in progress
+- ✅ **Cypher Operators**: CREATE, MATCH (with relationships), WHERE, RETURN all working
+  - ✅ AllNodesScan, LabelIndexScan iterators
+  - ✅ Expand iterator (relationship traversal)
+  - ✅ Filter iterator (WHERE clause)
+  - ✅ Create iterator (nodes and relationships)
 - 📋 **Query Optimizer**: Cost-based optimization planned for v0.2.0
 
 ## Performance (Alpha Benchmarks)

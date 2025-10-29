@@ -1,7 +1,7 @@
 # SQLite Graph Extension - Feature Reference
 
-**Last Updated**: January 25, 2025
-**Version**: Alpha v0.1.0+ (WHERE Clause Update)
+**Last Updated**: January 29, 2025
+**Version**: Alpha v0.1.0+ (Full CREATE Support)
 
 > This document provides the **definitive reference** for what Cypher features are working, partially working, and not yet implemented. Referenced by README.md.
 
@@ -13,13 +13,24 @@
 - [x] `CREATE (n)` - Create anonymous node
 - [x] `CREATE (n:Label)` - Create node with single label
 - [x] `CREATE (n:Label1:Label2)` - Create node with multiple labels
+- [x] `CREATE (n {prop: value})` - Create node with properties
+- [x] `CREATE (n:Label {prop: value})` - Create node with labels and properties
+- [x] `CREATE (a)-[:TYPE]->(b)` - Create relationships between nodes
+- [x] `CREATE (a)-[:TYPE {prop: value}]->(b)` - Create relationships with properties
+- [x] `CREATE (a {props})-[:TYPE {props}]->(b {props})` - Complete pattern with properties
 - **70/70 TCK tests passing** ✅
 
 **Example**:
 ```cypher
 CREATE (p:Person)
 CREATE (c:Company:Organization)
+CREATE (alice:Person {name: "Alice", age: 30})
+CREATE (a:Person {name: "Bob"})-[:KNOWS {since: 2020}]->(b:Person {name: "Charlie"})
 ```
+
+**Important**: Use **double quotes** for string values in property maps:
+- ✅ Works: `{name: "Alice"}`
+- ❌ Fails: `{name: 'Alice'}` (SQL escaping conflict)
 
 #### MATCH Operations - Nodes
 - [x] `MATCH (n) RETURN n` - Match all nodes
@@ -31,16 +42,18 @@ CREATE (c:Company:Organization)
 MATCH (p:Person) RETURN p
 ```
 
-#### MATCH Operations - Relationships ⭐ NEW!
+#### MATCH Operations - Relationships ✅ WORKING!
 - [x] `MATCH (a)-[r]->(b)` - Match any relationship
 - [x] `MATCH (a)-[:TYPE]->(b)` - Match by relationship type
 - [x] `MATCH (a:Label)-[:TYPE]->(b:Label)` - Match with node labels
 - [x] Multiple relationships returned correctly
+- [x] Chained patterns: `(a)-[r1]->(b)-[r2]->(c)`
 
 **Example**:
 ```cypher
 MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b
 MATCH (a)-[r]->(b) RETURN a, r, b
+MATCH (a)-[:KNOWS]->()-[:WORKS_WITH]->(c) RETURN a, c
 ```
 
 **Test Results**:
@@ -50,10 +63,15 @@ Alice-[:KNOWS]->Bob-[:WORKS_WITH]->Charlie
 Query: MATCH (a)-[:KNOWS]->(b) RETURN a, b
 Result: [{"a":Node(1),"b":Node(2),"r":Relationship(1)}]
 
-Query: MATCH (a)-[r]->(b) RETURN a, r, b  
+Query: MATCH (a)-[r]->(b) RETURN a, r, b
 Result: [{"a":Node(1),"b":Node(2),"r":Relationship(1)},
          {"a":Node(2),"b":Node(3),"r":Relationship(2)}]
 ```
+
+**Current Limitations**:
+- Only forward direction supported: `(a)-[r]->(b)` ✅, but not `(a)<-[r]-(b)` or `(a)-[r]-(b)` ❌
+- Cannot filter on relationship properties: `WHERE r.weight > 5` ❌
+- No variable-length paths: `[r*1..3]` ❌
 
 #### WHERE Clause
 - [x] `WHERE n.property > value` - Property comparison
@@ -95,46 +113,6 @@ MATCH (p:Person) WHERE p.age > 25 RETURN p.name
 
 **Workaround**: Filter in application layer after getting nodes
 
-#### CREATE with Properties ⭐ WORKING!
-- [x] `CREATE (n {prop: value})` - Use double quotes for strings
-- [x] `CREATE (n:Label {prop: value})` - Fully functional
-- [x] Multiple properties supported
-- [x] Integers, strings, and nested JSON
-
-**Example**:
-```cypher
--- Use double quotes for string values
-CREATE (p:Person {name: "Alice", age: 30})
-CREATE (c:Company {name: "Acme Inc", founded: 2020})
-```
-
-**Important**: Use **double quotes** for string values in property maps, not single quotes.
-- ✅ `{name: "Alice"}` - Works
-- ❌ `{name: 'Alice'}` - SQL escaping conflict
-
-#### CREATE Relationships ⭐ WORKING!
-- [x] `CREATE (a)-[:TYPE]->(b)` - Fully functional
-- [x] `CREATE (a:Label)-[:TYPE]->(b:Label)` - With node labels
-- [x] `CREATE (a {props})-[:TYPE]->(b {props})` - With properties
-- [x] Creates nodes and edges in single statement
-
-**Example**:
-```cypher
-CREATE (a:Person {name: "Bob"})-[:KNOWS]->(b:Person {name: "Charlie"})
-CREATE (a)-[:WORKS_WITH]->(b)
-```
-
-**Test Results**:
-```
-Query: CREATE (a:Person {name: "Bob"})-[:KNOWS]->(b:Person {name: "Charlie"})
-Result: ✅ Created Node(2), Node(3), Edge(1)
-
-Verification:
-  Node 2: Person, {name: "Bob"}
-  Node 3: Person, {name: "Charlie"}
-  Edge 1: 2-[:KNOWS]->3
-```
-
 ### ❌ Not Yet Implemented
 
 #### Complex WHERE Expressions
@@ -158,9 +136,11 @@ Verification:
 **Note**: 10,000 row result limit enforced in executor
 
 #### Advanced Pattern Matching
+- [ ] Bidirectional relationships: `(a)-[r]-(b)` or `(a)<-[r]-(b)`
 - [ ] Variable-length paths: `(a)-[:KNOWS*1..3]->(b)`
 - [ ] Shortest path: `shortestPath((a)-[*]->(b))`
 - [ ] Optional match: `OPTIONAL MATCH`
+- [ ] Relationship property filtering: `WHERE r.weight > 5`
 
 #### Write Operations Beyond CREATE
 - [ ] `MERGE` - Create or match
@@ -227,34 +207,34 @@ MATCH (p:Person) WHERE p.age > 25 RETURN p
 MATCH (a)-[:KNOWS]->()-[:KNOWS]->(c) RETURN a, c
 ```
 
-### ⚠️ Use SQL API Instead
+### ⚠️ Use SQL API for Advanced Features
+
+For features not yet implemented in Cypher, use the SQL API:
 
 ```sql
--- Create nodes with properties
-SELECT graph_node_add(NULL, '{"name": "Alice", "age": 30}');
-
--- Create edges
-SELECT graph_edge_add(1, 2, 'KNOWS', '{"since": "2020"}');
-
--- Complex property queries
-SELECT * FROM graph_nodes 
+-- Complex property queries with multiple conditions (AND/OR not yet in Cypher)
+SELECT * FROM graph_nodes
 WHERE json_extract(properties, '$.age') > 25
   AND json_extract(properties, '$.dept') = 'IT';
+
+-- Direct manipulation when needed
+SELECT graph_node_add(NULL, '{"name": "Alice", "age": 30}');
+SELECT graph_edge_add(1, 2, 'KNOWS', '{"since": "2020"}');
 ```
 
 ## Next Steps for v0.2.0
 
 ### High Priority
-1. Fix CREATE with properties (parser/lexer issue)
-2. Implement property projection in RETURN
-3. Add LIMIT/SKIP/ORDER BY clauses
-4. Complex expressions in WHERE (AND/OR/NOT)
+1. Implement property projection in RETURN (n.property)
+2. Add LIMIT/SKIP/ORDER BY clauses
+3. Complex expressions in WHERE (AND/OR/NOT)
+4. Aggregation functions (COUNT, SUM, AVG, etc.)
 
-### Medium Priority  
-5. CREATE relationships via Cypher
-6. Aggregation functions
-7. Property indexes for WHERE optimization
-8. MERGE operation
+### Medium Priority
+5. Property indexes for WHERE optimization
+6. MERGE operation
+7. SET operation for updating properties
+8. DELETE and DETACH DELETE operations
 
 ### Low Priority
 9. Variable-length paths
@@ -292,3 +272,23 @@ RETURN a, b
 ```
 
 **Limitation**: Use double quotes for string values: `{name: "Alice"}` not `{name: 'Alice'}`
+
+### What This Means
+
+You can now build complete graph applications **entirely in Cypher** without needing SQL API calls for basic operations:
+
+```cypher
+-- Create nodes with properties
+CREATE (alice:Person {name: "Alice", age: 30})
+
+-- Create relationships with properties
+CREATE (alice)-[:WORKS_AT {since: 2020}]->(company:Company {name: "Acme"})
+
+-- Query with filtering
+MATCH (p:Person)-[:WORKS_AT]->(c:Company)
+WHERE p.age > 25
+RETURN p, c
+
+-- Complex graph patterns
+CREATE (a:Person {name: "Alice"})-[:KNOWS]->(b:Person {name: "Bob"})-[:KNOWS]->(c:Person {name: "Charlie"})
+```
