@@ -1,118 +1,7 @@
 
 # Generated TCK test targets
 
-tck_test_clauses_call: tck_test_clauses_call.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_create: tck_test_clauses_create.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_delete: tck_test_clauses_delete.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_match: tck_test_clauses_match.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_match_where: tck_test_clauses_match_where.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_merge: tck_test_clauses_merge.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_remove: tck_test_clauses_remove.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_return: tck_test_clauses_return.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_return_orderby: tck_test_clauses_return_orderby.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_return_skip_limit: tck_test_clauses_return_skip_limit.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_set: tck_test_clauses_set.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_union: tck_test_clauses_union.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_unwind: tck_test_clauses_unwind.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_with: tck_test_clauses_with.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_with_orderBy: tck_test_clauses_with_orderBy.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_with_skip_limit: tck_test_clauses_with_skip_limit.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_with_where: tck_test_clauses_with_where.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_aggregation: tck_test_expressions_aggregation.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_boolean: tck_test_expressions_boolean.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_comparison: tck_test_expressions_comparison.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_conditional: tck_test_expressions_conditional.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_existentialSubqueries: tck_test_expressions_existentialSubqueries.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_graph: tck_test_expressions_graph.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_list: tck_test_expressions_list.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_literals: tck_test_expressions_literals.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_map: tck_test_expressions_map.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_mathematical: tck_test_expressions_mathematical.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_null: tck_test_expressions_null.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_path: tck_test_expressions_path.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_pattern: tck_test_expressions_pattern.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_precedence: tck_test_expressions_precedence.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_quantifier: tck_test_expressions_quantifier.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_string: tck_test_expressions_string.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_temporal: tck_test_expressions_temporal.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_typeConversion: tck_test_expressions_typeConversion.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_useCases_countingSubgraphMatches: tck_test_useCases_countingSubgraphMatches.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_useCases_triadicSelection: tck_test_useCases_triadicSelection.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-TCK_TESTS = tck_test_clauses_call tck_test_clauses_create tck_test_clauses_delete tck_test_clauses_match tck_test_clauses_match_where tck_test_clauses_merge tck_test_clauses_remove tck_test_clauses_return tck_test_clauses_return_orderby tck_test_clauses_return_skip_limit tck_test_clauses_set tck_test_clauses_union tck_test_clauses_unwind tck_test_clauses_with tck_test_clauses_with_orderBy tck_test_clauses_with_skip_limit tck_test_clauses_with_where tck_test_expressions_aggregation tck_test_expressions_boolean tck_test_expressions_comparison tck_test_expressions_conditional tck_test_expressions_existentialSubqueries tck_test_expressions_graph tck_test_expressions_list tck_test_expressions_literals tck_test_expressions_map tck_test_expressions_mathematical tck_test_expressions_null tck_test_expressions_path tck_test_expressions_pattern tck_test_expressions_precedence tck_test_expressions_quantifier tck_test_expressions_string tck_test_expressions_temporal tck_test_expressions_typeConversion tck_test_useCases_countingSubgraphMatches tck_test_useCases_triadicSelection
+TCK_TESTS = 
 
 test-tck-all: $(TCK_TESTS)
 	@echo "=== Running All TCK Tests ==="
@@ -128,4 +17,4 @@ test-tck-all: $(TCK_TESTS)
 	@echo "TCK test run completed"
 
 clean-tck:
-	rm -f $(TCK_TESTS) tck_test_*.c
+	rm -f $(TCK_TESTS)

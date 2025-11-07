@@ -8,6 +8,7 @@
 
 #include "graph-memory.h"
 #include "graph.h"
+#include "graph-vtab.h"
 
 /*
 ** Aggregate function context with proper cleanup
@@ -206,8 +207,7 @@ int graph_init_destructors(sqlite3 *db) {
   if (rc != SQLITE_OK) return rc;
   
   /* Register virtual table module with destructor */
-  extern sqlite3_module graphModule;
-  rc = graph_create_module_safe(db, "graph", &graphModule);
+  rc = graph_create_module_safe(db, "graph", graphGetModule());
   
   return rc;
 }

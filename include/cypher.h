@@ -27,6 +27,7 @@ typedef enum {
     CYPHER_TOK_MERGE,
     CYPHER_TOK_SET,
     CYPHER_TOK_DELETE,
+    CYPHER_TOK_ON,
     CYPHER_TOK_DETACH,
     CYPHER_TOK_REMOVE,
     CYPHER_TOK_WITH,
@@ -182,6 +183,8 @@ typedef enum {
     CYPHER_AST_SET,
     CYPHER_AST_DELETE,
     CYPHER_AST_REMOVE,
+    CYPHER_AST_ON_CREATE,
+    CYPHER_AST_ON_MATCH,
 
     CYPHER_AST_COUNT // Sentinel for max AST node type
 } CypherAstNodeType;

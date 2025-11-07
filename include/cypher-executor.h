@@ -420,6 +420,7 @@ CypherResult *cypherResultCreate(void);
 ** Safe to call with NULL pointer.
 */
 void cypherResultDestroy(CypherResult *pResult);
+void cypherResultClear(CypherResult *pResult);
 
 /*
 ** Add a column to a result row.

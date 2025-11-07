@@ -11,6 +11,11 @@ ifeq ($(SANITIZE),1)
     LDFLAGS += -fsanitize=address,undefined
 endif
 
+# Enable debug logging in C sources when DEBUG_LOG=1
+ifeq ($(DEBUG_LOG),1)
+    CFLAGS += -DGRAPH_DEBUG=1
+endif
+
 # Enable SQLite extensions for all builds
 CFLAGS += -DSQLITE_ENABLE_LOAD_EXTENSION=1
 
@@ -39,22 +44,27 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 test:
-	$(MAKE) -C $(TESTS_DIR) test
+	$(MAKE) -C $(TESTS_DIR) test SANITIZE=$(SANITIZE)
 
 # TCK target - compiles and runs all TCK test files with extension support
 test_tck: deps
 	@mkdir -p $(BUILD_DIR)
 	$(MAKE) -C $(SRC_DIR) CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"
-	$(MAKE) -C $(TESTS_DIR) tck CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"
+	$(MAKE) -C $(TESTS_DIR) test-tck-all CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"
 
 rebuild: clean all
 
 # Sanitizer build with memory hardening
 sanitize:
-	@echo "Building with sanitizers and memory hardening enabled..."
+	@echo "Building with sanitizers (tests/sqlite) and unsanitized extension..."
 	$(MAKE) clean
-	$(MAKE) all SANITIZE=1
-	@echo "Sanitizer build complete. Use for testing to detect memory issues."
+	# Build dependencies (sqlite/unity) with sanitizers and Unity double asserts
+	$(MAKE) -C _deps CFLAGS="$(CFLAGS) -DUNITY_INCLUDE_DOUBLE"
+	# Build extension (src) WITHOUT sanitizers to avoid ASAN ODR during dlopen
+	$(MAKE) -C $(SRC_DIR)
+	# Build tests WITH sanitizers (preserve test defaults like UNITY_INCLUDE_DOUBLE)
+	$(MAKE) -C $(TESTS_DIR) SANITIZE=1
+	@echo "Sanitizer build complete. Run tests with SANITIZE=1 to link sanitizer runtime."
 
 # Apply memory management hardening
 harden:

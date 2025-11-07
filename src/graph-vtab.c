@@ -32,7 +32,7 @@ static int graphRollback(sqlite3_vtab *pVtab);
 ** Defines all method pointers for SQLite virtual table interface.
 ** Version 0 indicates original virtual table interface.
 */
-sqlite3_module graphModule = {
+static sqlite3_module graphModule = {
   0,                    /* iVersion */
   graphCreate,          /* xCreate */
   graphConnect,         /* xConnect */
@@ -59,6 +59,11 @@ sqlite3_module graphModule = {
   0,                    /* xShadowName */
   0                     /* xIntegrity */
 };
+
+/* Accessor to avoid exporting graphModule as a global and causing ODR issues */
+const sqlite3_module *graphGetModule(void) {
+  return &graphModule;
+}
 
 /*
 ** Create a new virtual table instance.

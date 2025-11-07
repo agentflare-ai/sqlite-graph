@@ -62,8 +62,8 @@ void setUp(void) {
     // Enable loading extensions
     sqlite3_enable_load_extension(db, 1);
     
-    // Load graph extension
-    rc = sqlite3_load_extension(db, "../build/libgraph.so", "sqlite3_graph_init", &error_msg);
+    // Load graph extension (base name; platform suffix resolved by SQLite)
+    rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", &error_msg);
     if (rc != SQLITE_OK) {
         printf("Failed to load graph extension: %s\\n", error_msg);
         sqlite3_free(error_msg);
@@ -160,8 +160,14 @@ def generate_area_test_file(area, scenarios, output_dir):
     area_name = sanitize_name(area.replace('.', '_'))
     filename = f"tck_test_{area_name}.c"
     filepath = os.path.join(output_dir, filename)
+
+    # Do not overwrite existing test files; preserve manually implemented/restored tests
+    if os.path.exists(filepath):
+        print(f"Skipping existing file (preserving): {filename}")
+        return None
     
-    with open(filepath, 'w') as f:
+    # Create new file exclusively; fail if it somehow races into existence
+    with open(filepath, 'x') as f:
         # Write header
         f.write(f"// Generated TCK tests for language area: {area}\n")
         f.write(f"// Total scenarios: {len(scenarios)}\n\n")
@@ -212,7 +218,7 @@ test-tck-all: $(TCK_TESTS)
 \t@echo "TCK test run completed"
 
 clean-tck:
-\trm -f $(TCK_TESTS) tck_test_*.c
+\trm -f $(TCK_TESTS)
 '''
     
     return makefile_content

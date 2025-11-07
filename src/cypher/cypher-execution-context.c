@@ -417,6 +417,21 @@ void cypherResultDestroy(CypherResult *pResult) {
 }
 
 /*
+** Clear a result row that lives on the stack (do not free the struct itself).
+*/
+void cypherResultClear(CypherResult *pResult) {
+  int i;
+  if( !pResult ) return;
+  for( i = 0; i < pResult->nColumns; i++ ) {
+    sqlite3_free(pResult->azColumnNames[i]);
+    cypherValueDestroy(&pResult->aValues[i]);
+  }
+  sqlite3_free(pResult->azColumnNames);
+  sqlite3_free(pResult->aValues);
+  memset(pResult, 0, sizeof(CypherResult));
+}
+
+/*
 ** Add a column to a result row.
 ** Returns SQLITE_OK on success, error code on failure.
 */

@@ -170,6 +170,7 @@ static CypherTokenType cypherGetKeywordToken(const char *zKeyword, size_t len) {
         case 2:
             if (strncasecmp(zKeyword, "AS", 2) == 0) return CYPHER_TOK_AS;
             if (strncasecmp(zKeyword, "BY", 2) == 0) return CYPHER_TOK_BY;
+            if (strncasecmp(zKeyword, "ON", 2) == 0) return CYPHER_TOK_ON;
             if (strncasecmp(zKeyword, "IS", 2) == 0) return CYPHER_TOK_IS_NULL; // Simplified
             if (strncasecmp(zKeyword, "IN", 2) == 0) return CYPHER_TOK_IN;
             if (strncasecmp(zKeyword, "OR", 2) == 0) return CYPHER_TOK_OR;
@@ -358,6 +359,7 @@ const char *cypherTokenTypeName(CypherTokenType type) {
         case CYPHER_TOK_MERGE: return "MERGE";
         case CYPHER_TOK_SET: return "SET";
         case CYPHER_TOK_DELETE: return "DELETE";
+        case CYPHER_TOK_ON: return "ON";
         case CYPHER_TOK_DETACH: return "DETACH";
         case CYPHER_TOK_REMOVE: return "REMOVE";
         case CYPHER_TOK_WITH: return "WITH";

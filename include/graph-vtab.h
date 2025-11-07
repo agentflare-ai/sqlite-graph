@@ -105,9 +105,9 @@ int graphColumn(sqlite3_vtab_cursor *pCursor, sqlite3_context *pCtx,
 int graphRowid(sqlite3_vtab_cursor *pCursor, sqlite3_int64 *pRowid);
 
 /*
-** Virtual table module structure.
-** Defines all method pointers for SQLite virtual table interface.
+** Accessor for the graph virtual table module structure.
+** Returns a pointer to the sqlite3_module implementing the graph vtab.
 */
-extern sqlite3_module graphModule;
+const sqlite3_module *graphGetModule(void);
 
 #endif /* GRAPH_VTAB_H */

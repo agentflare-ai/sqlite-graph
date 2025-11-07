@@ -31,6 +31,7 @@ A powerful SQLite extension that adds graph database capabilities with full Cyph
 
 ### 🚧 In Progress
 - **Advanced Cypher Features**:
+  - MERGE relationships (nodes supported with ON CREATE/ON MATCH)
   - Relationship matching (edges/patterns)
   - WHERE clause filtering
   - Property expressions in RETURN

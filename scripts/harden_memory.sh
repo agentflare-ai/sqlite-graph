@@ -1,8 +1,10 @@
 #!/bin/bash
+set -euo pipefail
 
 # Script to systematically replace malloc/free with sqlite3_malloc/sqlite3_free
 # and add memory management hardening across the extension
 
+VERBOSE=${VERBOSE:-0}
 echo "Hardening memory management across SQLite graph extension..."
 
 # Function to process a single file
@@ -12,7 +14,9 @@ harden_file() {
         return
     fi
     
-    echo "Processing: $file"
+    if [ "$VERBOSE" = "1" ]; then
+        echo "Processing: $file"
+    fi
     
     # Create backup
     cp "$file" "${file}.backup"
@@ -28,8 +32,10 @@ harden_file() {
         sed -i '/^#include.*graph.*\.h/a #include "graph-memory.h"' "$file"
     fi
     
-    echo "  - Hardened malloc/free patterns"
-    echo "  - Added memory management include"
+    if [ "$VERBOSE" = "1" ]; then
+        echo "  - Hardened malloc/free patterns"
+        echo "  - Added memory management include"
+    fi
 }
 
 # Process all source files
@@ -38,4 +44,6 @@ find src -name "*.c" | while read -r file; do
 done
 
 echo "Memory management hardening complete!"
-echo "Backup files created with .backup extension"
+if [ "$VERBOSE" = "1" ]; then
+    echo "Backup files created with .backup extension"
+fi

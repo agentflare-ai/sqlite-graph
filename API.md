@@ -94,6 +94,22 @@ MATCH (n:Person:Employee {name: "Alice"}) REMOVE n:Employee
 ```
 
 #### Deleting Nodes
+### MERGE
+
+#### MERGE Nodes
+
+```cypher
+-- Merge node by label and properties (creates if not found)
+MERGE (n:Person {name: "Alice"})
+ON CREATE SET n.createdAt = 1234567890
+ON MATCH SET n.lastSeen = 1234567890
+```
+
+Notes:
+- Node MERGE matches by equality on provided properties and first label.
+- ON CREATE and ON MATCH property sets are supported for nodes.
+- Relationship MERGE is planned; relationship patterns in MERGE are not yet implemented.
+
 
 ```cypher
 -- Delete a node and its relationships

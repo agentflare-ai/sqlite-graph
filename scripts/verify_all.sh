@@ -1,7 +1,16 @@
 #!/bin/bash
 # scripts/verify_all.sh - Complete SELF_REVIEW.md verification
+set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# Portable timeout wrapper
+TIMEOUT=""
+if command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT="gtimeout 300"
+elif command -v timeout >/dev/null 2>&1; then
+  TIMEOUT="timeout 300"
+fi
 
 echo "=== SELF_REVIEW.md VERIFICATION ==="
 echo ""
@@ -41,7 +50,7 @@ fi
 
 # 4. Zero memory leaks (using working test)
 echo -n "4. Zero memory leaks: "
-LEAKS=$(valgrind --leak-check=full --error-exitcode=1 ./build/tests/test_cypher_basic 2>&1 | grep "definitely lost" | awk '{print $4}')
+LEAKS=$($TIMEOUT valgrind --leak-check=full --error-exitcode=1 ./build/tests/test_cypher_basic 2>&1 | grep "definitely lost" | awk '{print $4}')
 if [ -z "$LEAKS" ] || [ "$LEAKS" = "0" ]; then
   echo "✅ PASS"
   PASSED_CHECKS=$((PASSED_CHECKS + 1))

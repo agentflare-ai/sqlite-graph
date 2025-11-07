@@ -246,10 +246,16 @@ PhysicalPlanNode *logicalPlanToPhysical(LogicalPlanNode *pLogical, PlanContext *
   if( pLogical->zValue ) {
     pPhysical->zValue = sqlite3_mprintf("%s", pLogical->zValue);
   }
+  /* Use zIndexName to carry ON MATCH JSON if provided via pExtra */
+  if( pLogical->pExtra ) {
+    pPhysical->zIndexName = sqlite3_mprintf("%s", (const char*)pLogical->pExtra);
+  }
 
   /* Set cost and row estimates */
   pPhysical->rCost = pLogical->rEstimatedCost;
   pPhysical->iRows = pLogical->iEstimatedRows;
+  /* Propagate flags for operator-specific semantics (e.g., direction) */
+  pPhysical->iFlags = pLogical->iFlags;
   
   /* Convert children recursively */
   for( i = 0; i < pLogical->nChildren; i++ ) {

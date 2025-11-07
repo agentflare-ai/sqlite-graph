@@ -88,7 +88,7 @@ int sqlite3_graph_init(
   /* No mutex initialization needed for simplified approach */
   
   /* Register the graph virtual table module */
-  rc = sqlite3_create_module(pDb, "graph", &graphModule, (void *)&pGraph);
+  rc = sqlite3_create_module(pDb, "graph", graphGetModule(), (void *)&pGraph);
   if( rc!=SQLITE_OK ){
     *pzErrMsg = sqlite3_mprintf("Failed to register graph module: %s", 
                                 sqlite3_errmsg(pDb));
