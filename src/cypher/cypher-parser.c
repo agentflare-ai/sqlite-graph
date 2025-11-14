@@ -169,19 +169,24 @@ static void parserSetError(CypherParser *pParser, CypherLexer *pLexer, const cha
 
 CypherAst *cypherParse(CypherParser *pParser, const char *zQuery, char **pzErrMsg) {
     if (!zQuery) {
-        if (pzErrMsg) *pzErrMsg = strdup("Query string is NULL");
+        if (pzErrMsg) *pzErrMsg = sqlite3_mprintf("%s", "Query string is NULL");
         return NULL;
     }
     CypherLexer *pLexer = cypherLexerCreate(zQuery);
     if (!pLexer) {
-        if (pzErrMsg) *pzErrMsg = strdup("Failed to create lexer");
+        if (pzErrMsg) *pzErrMsg = sqlite3_mprintf("%s", "Failed to create lexer");
         return NULL;
     }
 
     pParser->pAst = parseQuery(pLexer, pParser);
 
-    if (pParser->zErrorMsg) {
-        if (pzErrMsg) *pzErrMsg = strdup(pParser->zErrorMsg);
+    /* Only set error message if parsing failed (pAst is NULL) */
+    if (!pParser->pAst && pParser->zErrorMsg) {
+        if (pzErrMsg) {
+            /* Copy error message using sqlite3_mprintf to ensure proper
+             * memory management compatibility with sqlite3_free */
+            *pzErrMsg = sqlite3_mprintf("%s", pParser->zErrorMsg);
+        }
     }
 
     cypherLexerDestroy(pLexer);
