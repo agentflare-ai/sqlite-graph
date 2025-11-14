@@ -7,11 +7,6 @@ on:
         description: 'Release version (e.g., 0.1.0-alpha.0 or leave empty to use VERSION file)'
         required: false
         type: string
-      skip_validation:
-        description: 'Skip branch validation (allow releases from non-main branches)'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -25,6 +20,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
+        ref: main
         fetch-depth: 0  # Need full history for tag operations
     
     - name: Determine version
