@@ -64,7 +64,6 @@ git push origin "v$VERSION"
 When a tag is pushed (format: `v*`), GitHub Actions will automatically:
 
 1. **Build the extension** for multiple platforms:
-   - Ubuntu 20.04 (linux-x86_64)
    - Ubuntu 22.04 (linux-x86_64-u22)
    - Ubuntu 24.04 (linux-x86_64-u24)
 

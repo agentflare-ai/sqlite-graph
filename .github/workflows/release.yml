@@ -17,9 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
-            platform: linux-x86_64
-            arch: x86_64
           - os: ubuntu-22.04
             platform: linux-x86_64-u22
             arch: x86_64

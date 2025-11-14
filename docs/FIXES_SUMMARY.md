@@ -115,7 +115,6 @@ After successful release:
 - ✅ Release badge updates automatically
 - ✅ Build badge shows current status
 - ✅ Downloadable binaries available for:
-  - Ubuntu 20.04 (linux-x86_64)
   - Ubuntu 22.04 (linux-x86_64-u22)
   - Ubuntu 24.04 (linux-x86_64-u24)
 

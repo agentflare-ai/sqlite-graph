@@ -50,7 +50,7 @@ The workflow will start immediately and show in the workflows list
 ### What Happens Next
 Once the tag is pushed:
 - The "Release" workflow automatically triggers
-- Builds are created for Ubuntu 20.04, 22.04, and 24.04
+- Builds are created for Ubuntu 22.04 and 24.04
 - Tests are run (optional, won't block release)
 - GitHub Release is published with binaries
 - Badges update automatically
