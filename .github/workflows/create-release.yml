@@ -1,0 +1,101 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 0.1.0-alpha.0 or leave empty to use VERSION file)'
+        required: false
+        type: string
+      skip_validation:
+        description: 'Skip branch validation (allow releases from non-main branches)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  create-release-tag:
+    name: Create Release Tag
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Need full history for tag operations
+    
+    - name: Determine version
+      id: version
+      run: |
+        if [ -n "${{ inputs.version }}" ]; then
+          VERSION="${{ inputs.version }}"
+        else
+          VERSION=$(cat VERSION)
+        fi
+        
+        # Validate version format
+        if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9\.]+)?$ ]]; then
+          echo "Error: Invalid version format: $VERSION"
+          echo "Expected format: X.Y.Z or X.Y.Z-suffix (e.g., 0.1.0-alpha.0)"
+          exit 1
+        fi
+        
+        # Add 'v' prefix if not present
+        if [[ "$VERSION" != v* ]]; then
+          TAG="v$VERSION"
+        else
+          TAG="$VERSION"
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "Creating release: $TAG"
+    
+    - name: Check if tag exists
+      run: |
+        if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+          echo "Error: Tag ${{ steps.version.outputs.tag }} already exists"
+          exit 1
+        fi
+    
+    - name: Validate branch
+      if: ${{ !inputs.skip_validation }}
+      run: |
+        CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$CURRENT_BRANCH" != "main" ]; then
+          echo "Error: Not on main branch (current: $CURRENT_BRANCH)"
+          echo "To release from a different branch, enable 'Skip branch validation'"
+          exit 1
+        fi
+    
+    - name: Create and push tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}
+
+        See CHANGELOG.md for details."
+        
+        git push origin "${{ steps.version.outputs.tag }}"
+    
+    - name: Create summary
+      run: |
+        echo "## ✅ Release Tag Created" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Tag:** ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "The Release workflow will now automatically:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Build the extension for multiple platforms" >> $GITHUB_STEP_SUMMARY
+        echo "2. Run tests" >> $GITHUB_STEP_SUMMARY
+        echo "3. Create a GitHub release with binaries" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Monitor progress:** [Actions](${{ github.server_url }}/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Release will be available at:** [${{ steps.version.outputs.tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.version.outputs.tag }})" >> $GITHUB_STEP_SUMMARY

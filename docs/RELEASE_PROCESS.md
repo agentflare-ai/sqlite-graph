@@ -11,7 +11,26 @@ This document describes how to create releases for the SQLite Graph Database Ext
 
 ## Creating a Release
 
-### Automatic Release (Recommended)
+### Option 1: GitHub Actions UI (Recommended)
+
+Create a release directly from GitHub's web interface:
+
+1. Go to the [Actions tab](https://github.com/agentflare-ai/sqlite-graph/actions)
+2. Select **"Create Release"** workflow from the left sidebar
+3. Click **"Run workflow"** button
+4. Configure the release:
+   - **Version**: Leave empty to use VERSION file, or specify (e.g., `0.1.0-alpha.1`)
+   - **Skip branch validation**: Check to allow releases from non-main branches
+5. Click **"Run workflow"**
+
+The workflow will:
+1. Validate the version format
+2. Check that the tag doesn't already exist
+3. Verify you're on the main branch (unless skipped)
+4. Create and push the git tag
+5. Trigger the release build workflow automatically
+
+### Option 2: Command Line Script
 
 Use the provided script to create a release:
 
@@ -29,7 +48,7 @@ The script will:
 3. Create a git tag with the version
 4. Push the tag to trigger the release workflow
 
-### Manual Release
+### Option 3: Manual Tag Creation
 
 If you prefer to create a release manually:
 

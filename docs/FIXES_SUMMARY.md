@@ -66,6 +66,18 @@ To create the `v0.1.0-alpha.0` release (matching VERSION file):
 
 ### Steps
 
+**Option A: Using GitHub Actions UI (Recommended)**
+
+1. Navigate to: https://github.com/agentflare-ai/sqlite-graph/actions
+2. Click on "Create Release" workflow
+3. Click "Run workflow" button
+4. Leave version empty (will use VERSION file) or specify version
+5. Click "Run workflow"
+6. Monitor the workflow execution
+7. Verify the release at: https://github.com/agentflare-ai/sqlite-graph/releases
+
+**Option B: Using Command Line Script**
+
 ```bash
 # 1. Navigate to repository root
 cd /path/to/sqlite-graph

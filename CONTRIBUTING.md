@@ -429,7 +429,12 @@ For maintainers with write access to create releases:
 
 1. **Update VERSION file** with the new version number
 2. **Update CHANGELOG.md** with new features and fixes
-3. **Use the release script**:
+3. **Create the release** using one of these methods:
+   
+   **Option A: GitHub UI (Recommended)**
+   - Go to Actions → "Create Release" workflow → "Run workflow"
+   
+   **Option B: Command Line**
    ```bash
    ./scripts/create-release.sh
    ```

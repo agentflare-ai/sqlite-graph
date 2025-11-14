@@ -29,7 +29,16 @@ cd _deps && make
 # Expected: Warnings about missing source files, but exits successfully
 ```
 
-### 2. Verify Release Script
+### 2. Verify Release Methods
+
+#### Test GitHub Actions Workflow (Recommended)
+
+1. Navigate to repository Actions tab
+2. Verify "Create Release" workflow exists
+3. Check workflow has proper inputs configured
+4. Confirm workflow permissions are set
+
+#### Test Command Line Script
 
 Test release script validation:
 
@@ -66,7 +75,18 @@ grep -q "RELEASE_PROCESS.md" CONTRIBUTING.md && echo "Found" || echo "Not found"
 
 ### 1. Monitor Release Process
 
-When creating the first release:
+**Option A: Using GitHub Actions UI**
+
+1. Navigate to Actions → "Create Release" workflow
+2. Click "Run workflow"
+3. Configure:
+   - Leave version empty (uses VERSION file)
+   - Keep "Skip branch validation" unchecked
+4. Click "Run workflow"
+5. Watch the workflow execution in real-time
+6. Check the summary for success message and release links
+
+**Option B: Using Command Line Script**
 
 ```bash
 # Create the release
