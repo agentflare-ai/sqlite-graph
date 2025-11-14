@@ -25,6 +25,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
+        ref: main
         fetch-depth: 0  # Need full history for tag operations
     
     - name: Determine version
