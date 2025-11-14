@@ -36,16 +36,26 @@ cat > _deps/Makefile << 'EOF'
 
 all:
 	@echo "Building SQLite for sqlite_graph..."
-	@if [ ! -f sqlite-src/sqlite3.o ]; then \
+	@if [ -f sqlite-src/sqlite3.c ] && [ ! -f sqlite-src/sqlite3.o ]; then \
+		echo "Compiling sqlite3.c..."; \
 		$(CC) -c $(CFLAGS) \
 			-DSQLITE_ENABLE_STMT_SCANSTATUS -DSQLITE_ENABLE_BYTECODE_VTAB \
 			-DSQLITE_ENABLE_EXPLAIN_COMMENTS -fPIC \
 			sqlite-src/sqlite3.c -o sqlite-src/sqlite3.o; \
+	elif [ ! -f sqlite-src/sqlite3.c ]; then \
+		echo "Warning: sqlite3.c not found. Run scripts/vendor.sh to download dependencies."; \
+	else \
+		echo "sqlite3.o already exists, skipping compilation"; \
 	fi
-	@if [ ! -f Unity-2.5.2/src/unity.o ]; then \
+	@if [ -f Unity-2.5.2/src/unity.c ] && [ ! -f Unity-2.5.2/src/unity.o ]; then \
+		echo "Compiling unity.c..."; \
 		$(CC) -c $(CFLAGS) Unity-2.5.2/src/unity.c -o Unity-2.5.2/src/unity.o; \
+	elif [ ! -f Unity-2.5.2/src/unity.c ]; then \
+		echo "Warning: unity.c not found. Run scripts/vendor.sh to download dependencies."; \
+	else \
+		echo "unity.o already exists, skipping compilation"; \
 	fi
-	@echo "Dependencies built successfully"
+	@echo "Dependencies check complete"
 
 clean:
 	rm -f sqlite-src/sqlite3.o
