@@ -9,7 +9,11 @@ set -e
 if [ -n "$1" ]; then
     VERSION="$1"
 else
-    VERSION=$(cat VERSION)
+    VERSION=$(cat VERSION 2>/dev/null || echo '')
+    if [ -z "$VERSION" ]; then
+        echo "Error: VERSION file not found or empty"
+        exit 1
+    fi
 fi
 
 # Validate version format

@@ -9,11 +9,15 @@ mkdir -p _deps/Unity-2.5.2/src
 # Download SQLite amalgamation (same version as sqlite_vec)
 echo "Downloading SQLite amalgamation..."
 if curl -f -L -o sqlite-amalgamation.zip https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip 2>/dev/null; then
-    unzip -q sqlite-amalgamation.zip
-    mv sqlite-amalgamation-3450300/* _deps/sqlite-src/
-    rmdir sqlite-amalgamation-3450300
-    rm sqlite-amalgamation.zip
-    echo "SQLite downloaded successfully"
+    if unzip -q sqlite-amalgamation.zip; then
+        mv sqlite-amalgamation-3450300/* _deps/sqlite-src/
+        rmdir sqlite-amalgamation-3450300
+        rm sqlite-amalgamation.zip
+        echo "SQLite downloaded successfully"
+    else
+        rm -f sqlite-amalgamation.zip
+        echo "Warning: Failed to extract SQLite. Ensure sqlite3.c is in _deps/sqlite-src/"
+    fi
 else
     echo "Warning: Failed to download SQLite. Ensure sqlite3.c is in _deps/sqlite-src/"
 fi
@@ -21,11 +25,15 @@ fi
 # Download Unity testing framework
 echo "Downloading Unity testing framework..."
 if curl -f -L -o unity.zip https://github.com/ThrowTheSwitch/Unity/archive/v2.5.2.zip 2>/dev/null; then
-    unzip -q unity.zip
-    mv Unity-2.5.2/* _deps/Unity-2.5.2/
-    rm -rf Unity-2.5.2
-    rm unity.zip
-    echo "Unity downloaded successfully"
+    if unzip -q unity.zip; then
+        mv Unity-2.5.2/* _deps/Unity-2.5.2/
+        rm -rf Unity-2.5.2
+        rm unity.zip
+        echo "Unity downloaded successfully"
+    else
+        rm -f unity.zip
+        echo "Warning: Failed to extract Unity. Ensure unity.c is in _deps/Unity-2.5.2/src/"
+    fi
 else
     echo "Warning: Failed to download Unity. Ensure unity.c is in _deps/Unity-2.5.2/src/"
 fi

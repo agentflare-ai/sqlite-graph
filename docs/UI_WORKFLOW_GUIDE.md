@@ -68,13 +68,13 @@ Once the tag is pushed:
 
 | Feature | GitHub UI | CLI Script |
 |---------|-----------|------------|
-| Requires local clone | ❌ No | ✅ Yes |
-| Requires git installed | ❌ No | ✅ Yes |
-| Checks uncommitted changes | ❌ No | ✅ Yes |
-| Branch validation | ✅ Yes (optional) | ✅ Yes (required) |
-| Version validation | ✅ Yes | ✅ Yes |
-| Remote execution | ✅ Yes | ❌ No |
-| Visual feedback | ✅ Rich UI | ⚠️ Terminal only |
+| Local clone required | No | Yes |
+| Git installed required | No | Yes |
+| Checks uncommitted changes | No | Yes |
+| Branch validation | Yes (optional) | Yes (required) |
+| Version validation | Yes | Yes |
+| Remote execution | Yes | No |
+| Visual feedback | Rich UI | Terminal only |
 
 Both methods create the same git tag and trigger the same release workflow.
 
