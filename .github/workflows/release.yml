@@ -36,6 +36,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential gcc make
 
+    - name: Setup vendor dependencies
+      run: bash scripts/vendor.sh
+
     - name: Build extension (optimized)
       run: |
         export CFLAGS="-O3 -DNDEBUG -march=x86-64 -mtune=generic"
