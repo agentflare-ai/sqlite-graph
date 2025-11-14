@@ -425,11 +425,23 @@ void benchmark_operation(void) {
 
 ## Release Process
 
-1. **Update version numbers** in relevant files
+For maintainers with write access to create releases:
+
+1. **Update VERSION file** with the new version number
 2. **Update CHANGELOG.md** with new features and fixes
-3. **Tag the release**: `git tag v1.0.0`
-4. **Create release notes** on GitHub
-5. **Update documentation** if needed
+3. **Create the release** using one of these methods:
+   
+   **Option A: GitHub UI (Recommended)**
+   - Go to Actions → "Create Release" workflow → "Run workflow"
+   
+   **Option B: Command Line**
+   ```bash
+   ./scripts/create-release.sh
+   ```
+4. **Monitor the release workflow** at GitHub Actions
+5. **Verify the release** appears on GitHub Releases page
+
+For detailed instructions, see [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md).
 
 ## Getting Help
 
