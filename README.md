@@ -187,12 +187,6 @@ For platform-specific instructions and troubleshooting, see [INSTALL.md](INSTALL
 ### Example 1: Using Cypher Queries
 
 ```python
-
-```
-
-### Example 1: Using Cypher Queries
-
-```python
 import sqlite3
 import json
 
