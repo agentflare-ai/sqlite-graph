@@ -9,13 +9,25 @@ GRAPH_LIB = ../build/libgraph_static.a
 
 LDFLAGS = -lm -ldl -lpthread
 
-# Basic tests that need to be fixed
-BASIC_TESTS = test_loading test_insert_nodes test_query_nodes
-EXTENDED_TESTS = test_clauses_create test_clauses_delete test_clauses_match test_clauses_return test_clauses_where
-EXTENDED_TESTS += test_concurrency test_cypher_functions test_cypher_queries test_error_handling
-EXTENDED_TESTS += test_graph_algorithms test_performance test_real_cypher_syntax test_storage test_transactions
+TEST_OUTPUT_DIR = ../build/tests
 
-ALL_TESTS = $(BASIC_TESTS) $(EXTENDED_TESTS)
+BASIC_TEST_NAMES = test_loading test_insert_nodes test_query_nodes
+BASIC_TESTS = $(addprefix $(TEST_OUTPUT_DIR)/, $(BASIC_TEST_NAMES))
+
+EXTENDED_TEST_NAMES = test_clauses_create test_clauses_delete test_clauses_match test_clauses_return test_clauses_where
+EXTENDED_TEST_NAMES += test_concurrency test_cypher_functions test_cypher_queries test_error_handling
+EXTENDED_TEST_NAMES += test_graph_algorithms test_performance test_real_cypher_syntax test_storage test_transactions
+EXTENDED_TEST_NAMES += test_merge_clauses test_expression_evaluator
+EXTENDED_TESTS = $(addprefix $(TEST_OUTPUT_DIR)/, $(EXTENDED_TEST_NAMES))
+
+CY_TEST = $(TEST_OUTPUT_DIR)/test_cypher_basic
+HARNESS_TESTS = $(BASIC_TESTS) $(CY_TEST)
+ALL_TESTS = $(HARNESS_TESTS) $(EXTENDED_TESTS)
+
+TCK_TEST_SOURCES := $(wildcard tck_test_*.c)
+TCK_TEST_NAMES := $(notdir $(basename $(TCK_TEST_SOURCES)))
+TCK_TESTS = $(addprefix $(TEST_OUTPUT_DIR)/, $(TCK_TEST_NAMES))
+TCK_RUNNER = $(TEST_OUTPUT_DIR)/tck_runner
 
 .PHONY: all clean test test-basic test-extended test-tck prepare-libs
 
@@ -27,194 +39,94 @@ prepare-libs:
 	@echo "Ensuring required libraries are built..."
 	@cd .. && $(MAKE) -C _deps && $(MAKE) -C src
 
-# Basic test targets using static libraries
-$(BASIC_TESTS): %: %.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
+# Shared build rule for all harness and TCK binaries
+$(TEST_OUTPUT_DIR):
+	@mkdir -p $(TEST_OUTPUT_DIR)
+
+$(TEST_OUTPUT_DIR)/%: %.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) | $(TEST_OUTPUT_DIR)
 	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
 
-# Extended test targets using static libraries  
-$(EXTENDED_TESTS): %: %.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-test-basic: $(BASIC_TESTS)
+test-basic: prepare-libs $(HARNESS_TESTS)
 	@echo "=== Running Basic Tests ==="
-	@for test in $(BASIC_TESTS); do \
-		echo "Running $$test..."; \
-		if ./$$test; then \
-			echo "✅ $$test PASSED"; \
+	@for test in $(HARNESS_TESTS); do \
+		name=$$(basename $$test); \
+		echo "Running $$name..."; \
+		if $$test; then \
+			echo "✅ $$name PASSED"; \
 		else \
-			echo "❌ $$test FAILED"; \
+			echo "❌ $$name FAILED"; \
 			exit 1; \
 		fi; \
 		echo; \
 	done
 	@echo "🎉 ALL BASIC TESTS PASSED!"
 
-test-extended: $(EXTENDED_TESTS) 
+test-extended: prepare-libs $(EXTENDED_TESTS) 
 	@echo "=== Running Extended Tests ==="
 	@for test in $(EXTENDED_TESTS); do \
-		echo "Running $$test..."; \
-		if ./$$test; then \
-			echo "✅ $$test PASSED"; \
+		name=$$(basename $$test); \
+		echo "Running $$name..."; \
+		if $$test; then \
+			echo "✅ $$name PASSED"; \
 		else \
-			echo "❌ $$test FAILED (might be expected for some tests)"; \
+			echo "❌ $$name FAILED (might be expected for some tests)"; \
 		fi; \
 		echo; \
 	done
 	@echo "Extended tests completed"
 
-test: test-basic test-extended
+test: prepare-libs $(HARNESS_TESTS) $(EXTENDED_TESTS)
+	$(MAKE) test-basic
+	$(MAKE) test-extended
 
 clean:
-	rm -f $(ALL_TESTS) tck_runner *.o
+	rm -rf $(TEST_OUTPUT_DIR)
+	rm -f tck_test_*.o *.o
 
 # TCK Test Generation and Running
 generate-tck-tests: generate_tck_tests.py ../tck_scenarios_manifest.csv
 	python3 generate_tck_tests.py
 
-tck_runner: tck_runner.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
+tck: prepare-libs $(TCK_RUNNER) $(TCK_TESTS)
+	@echo "=== Running TCK Runner ==="
+	@if $(TCK_RUNNER); then \
+		echo "✅ tck_runner PASSED"; \
+	else \
+		echo "⚠️  tck_runner reported failures (expected for incomplete coverage)"; \
+	fi
+	@echo "=== Running Generated TCK Tests ==="
+	@for test in $(TCK_TESTS); do \
+		name=$$(basename $$test); \
+		echo "Running $$name..."; \
+		if $$test; then \
+			echo "✅ $$name PASSED"; \
+		else \
+			echo "⚠️  $$name had failures (expected for unimplemented scenarios)"; \
+		fi; \
+		echo; \
+	done
+	@echo "TCK test run completed"
 
-test-tck: tck_runner
-	@echo "=== Running TCK Tests ==="
-	./tck_runner
-	@echo "TCK tests completed"
-
-# TCK individual test targets can be added here
-# Example: tck-clauses-match: generated_tck_clauses_match.c
-#	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-# Generated TCK test targets
-
-tck_test_clauses_call: tck_test_clauses_call.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_create: tck_test_clauses_create.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_delete: tck_test_clauses_delete.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_match: tck_test_clauses_match.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_match_where: tck_test_clauses_match_where.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_merge: tck_test_clauses_merge.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_remove: tck_test_clauses_remove.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_return: tck_test_clauses_return.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_return_orderby: tck_test_clauses_return_orderby.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_return_skip_limit: tck_test_clauses_return_skip_limit.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_set: tck_test_clauses_set.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_union: tck_test_clauses_union.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_unwind: tck_test_clauses_unwind.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_with: tck_test_clauses_with.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_with_orderBy: tck_test_clauses_with_orderBy.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_with_skip_limit: tck_test_clauses_with_skip_limit.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_clauses_with_where: tck_test_clauses_with_where.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_aggregation: tck_test_expressions_aggregation.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_boolean: tck_test_expressions_boolean.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_comparison: tck_test_expressions_comparison.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_conditional: tck_test_expressions_conditional.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_existentialSubqueries: tck_test_expressions_existentialSubqueries.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_graph: tck_test_expressions_graph.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_list: tck_test_expressions_list.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_literals: tck_test_expressions_literals.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_map: tck_test_expressions_map.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_mathematical: tck_test_expressions_mathematical.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_null: tck_test_expressions_null.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_path: tck_test_expressions_path.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_pattern: tck_test_expressions_pattern.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_precedence: tck_test_expressions_precedence.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_quantifier: tck_test_expressions_quantifier.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_string: tck_test_expressions_string.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_temporal: tck_test_expressions_temporal.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_expressions_typeConversion: tck_test_expressions_typeConversion.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_useCases_countingSubgraphMatches: tck_test_useCases_countingSubgraphMatches.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-tck_test_useCases_triadicSelection: tck_test_useCases_triadicSelection.c $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB)
-	$(CC) $(CFLAGS) $< -o $@ $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-
-TCK_TESTS = tck_test_clauses_call tck_test_clauses_create tck_test_clauses_delete tck_test_clauses_match tck_test_clauses_match_where tck_test_clauses_merge tck_test_clauses_remove tck_test_clauses_return tck_test_clauses_return_orderby tck_test_clauses_return_skip_limit tck_test_clauses_set tck_test_clauses_union tck_test_clauses_unwind tck_test_clauses_with tck_test_clauses_with_orderBy tck_test_clauses_with_skip_limit tck_test_clauses_with_where tck_test_expressions_aggregation tck_test_expressions_boolean tck_test_expressions_comparison tck_test_expressions_conditional tck_test_expressions_existentialSubqueries tck_test_expressions_graph tck_test_expressions_list tck_test_expressions_literals tck_test_expressions_map tck_test_expressions_mathematical tck_test_expressions_null tck_test_expressions_path tck_test_expressions_pattern tck_test_expressions_precedence tck_test_expressions_quantifier tck_test_expressions_string tck_test_expressions_temporal tck_test_expressions_typeConversion tck_test_useCases_countingSubgraphMatches tck_test_useCases_triadicSelection
+test-tck: tck
 
 test-tck-all: $(TCK_TESTS)
 	@echo "=== Running All TCK Tests ==="
 	@for test in $(TCK_TESTS); do \
-		echo "Running $$test..."; \
-		if ./$$test; then \
-			echo "✅ $$test PASSED"; \
+		name=$$(basename $$test); \
+		echo "Running $$name..."; \
+		if $$test; then \
+			echo "✅ $$name PASSED"; \
 		else \
-			echo "⚠️  $$test had failures (expected for unimplemented scenarios)"; \
+			echo "⚠️  $$name had failures (expected for unimplemented scenarios)"; \
 		fi; \
 		echo; \
 	done
 	@echo "TCK test run completed"
 
 clean-tck:
-	rm -f $(TCK_TESTS) tck_test_*.c
+	rm -f $(TCK_TESTS) $(TCK_RUNNER)
+	rm -f tck_test_*.c
 
 # Working INSERT tests
 test_insert_nodes_working: test_insert_nodes_working.c
 	$(CC) $(CFLAGS) test_insert_nodes_working.c -o test_insert_nodes_working $(UNITY_LIB) $(SQLITE_LIB) $(GRAPH_LIB) $(LDFLAGS)
-

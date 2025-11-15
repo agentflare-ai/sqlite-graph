@@ -8,10 +8,12 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include "cypher-executor.h"
 #include "cypher-expressions.h"
 #include "cypher-write.h"
+#include "cypher-planner.h"
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 /* Forward declarations for write operation wrapper iterators */
 static CypherIterator *createWriteIteratorWrapper(PhysicalPlanNode *pPlan, ExecutionContext *pContext);
@@ -95,6 +97,416 @@ void cypherIteratorDestroy(CypherIterator *pIterator) {
   }
 
   sqlite3_free(pIterator);
+}
+
+static int mergeAppendProperty(char ***pazProps, CypherValue ***papValues,
+                               int *pnCount, const char *zProp, CypherValue *pValue);
+
+typedef struct MergeIteratorData {
+  int bExecuted;
+  MergeClauseDetails *pDetails;
+} MergeIteratorData;
+
+static int mergeApplyMatchPropsFromDetails(const MergeClauseDetails *pDetails,
+                                           MergeNodeOp *pOp,
+                                           ExecutionContext *pContext) {
+  int rc = SQLITE_OK;
+  int i;
+
+  if( !pDetails || !pOp ) return SQLITE_OK;
+  if( pDetails->nMatchProps <= 0 ) return SQLITE_OK;
+
+  for( i = 0; rc == SQLITE_OK && i < pDetails->nMatchProps; i++ ) {
+    const MergePropertyEntry *pEntry = &pDetails->aMatchProps[i];
+    CypherValue *pValue = NULL;
+
+    /* Use the new expression evaluator instead of literal-only converter */
+    rc = cypherEvaluateAstExpression(pEntry->pValueExpr, pContext, &pValue);
+    if( rc != SQLITE_OK ) {
+      if( pValue ) {
+        cypherValueDestroy(pValue);
+        sqlite3_free(pValue);
+      }
+      break;
+    }
+
+    rc = mergeAppendProperty(&pOp->azMatchProps, &pOp->apMatchValues,
+                             &pOp->nMatchProps,
+                             pEntry->zProperty ? pEntry->zProperty : "",
+                             pValue);
+    if( rc != SQLITE_OK ) {
+      cypherValueDestroy(pValue);
+      sqlite3_free(pValue);
+    }
+  }
+
+  return rc;
+}
+
+static int mergeLiteralAstToValue(CypherAst *pAst, CypherValue **ppValue) {
+  CypherValue *pValue;
+  const char *zLiteral = NULL;
+  int rc = SQLITE_OK;
+
+  pValue = (CypherValue*)sqlite3_malloc(sizeof(CypherValue));
+  if( !pValue ) return SQLITE_NOMEM;
+  cypherValueInit(pValue);
+
+  if( pAst ) {
+    zLiteral = cypherAstGetValue(pAst);
+    fprintf(stderr, "DEBUG mergeLiteralAstToValue: pAst=%p type=%d zLiteral='%s'\n",
+            pAst, pAst->type, zLiteral ? zLiteral : "(null)");
+  }
+
+  if( !pAst || !zLiteral ) {
+    cypherValueSetNull(pValue);
+  } else if( pAst->type == CYPHER_AST_LITERAL ) {
+    size_t nLen = strlen(zLiteral);
+    if( (nLen >= 2) &&
+        ((zLiteral[0] == '\'' && zLiteral[nLen-1] == '\'') ||
+         (zLiteral[0] == '"' && zLiteral[nLen-1] == '"')) ) {
+      char *zCopy = sqlite3_mprintf("%.*s", (int)(nLen - 2), zLiteral + 1);
+      if( !zCopy ) { sqlite3_free(pValue); return SQLITE_NOMEM; }
+      rc = cypherValueSetString(pValue, zCopy);
+      sqlite3_free(zCopy);
+      if( rc != SQLITE_OK ) { sqlite3_free(pValue); return rc; }
+    } else if( sqlite3_stricmp(zLiteral, "true") == 0 ||
+               sqlite3_stricmp(zLiteral, "false") == 0 ) {
+      cypherValueSetBoolean(pValue, sqlite3_stricmp(zLiteral, "true") == 0);
+    } else if( sqlite3_stricmp(zLiteral, "null") == 0 ) {
+      cypherValueSetNull(pValue);
+    } else {
+      /* Check if it's a valid number */
+      const char *p = zLiteral;
+      int bValid = 1;
+      int bFloat = 0;
+
+      /* Skip optional leading minus */
+      if( *p == '-' || *p == '+' ) p++;
+
+      /* Must have at least one digit */
+      if( !*p || !isdigit(*p) ) {
+        bValid = 0;
+      } else {
+        /* Parse integer part */
+        while( isdigit(*p) ) p++;
+
+        /* Check for decimal point */
+        if( *p == '.' ) {
+          bFloat = 1;
+          p++;
+          /* Must have at least one digit after decimal */
+          if( !isdigit(*p) ) bValid = 0;
+          while( isdigit(*p) ) p++;
+        }
+
+        /* Check for exponent */
+        if( *p == 'e' || *p == 'E' ) {
+          bFloat = 1;
+          p++;
+          if( *p == '-' || *p == '+' ) p++;
+          if( !isdigit(*p) ) bValid = 0;
+          while( isdigit(*p) ) p++;
+        }
+
+        /* Must be at end of string */
+        if( *p != '\0' ) bValid = 0;
+      }
+
+      if( bValid ) {
+        if( bFloat ) {
+          cypherValueSetFloat(pValue, atof(zLiteral));
+        } else {
+          cypherValueSetInteger(pValue, atoll(zLiteral));
+        }
+      } else {
+        /* Not a valid number, treat as string */
+        rc = cypherValueSetString(pValue, zLiteral);
+        if( rc != SQLITE_OK ) { sqlite3_free(pValue); return rc; }
+      }
+    }
+  } else {
+    rc = cypherValueSetString(pValue, zLiteral);
+    if( rc != SQLITE_OK ) { sqlite3_free(pValue); return rc; }
+  }
+
+  *ppValue = pValue;
+  fprintf(stderr, "DEBUG mergeLiteralAstToValue result: type=%d\n", pValue->type);
+  if (pValue->type == CYPHER_VALUE_STRING) {
+    fprintf(stderr, "DEBUG   string value: '%s'\n", pValue->u.zString ? pValue->u.zString : "(null)");
+  } else if (pValue->type == CYPHER_VALUE_INTEGER) {
+    fprintf(stderr, "DEBUG   integer value: %lld\n", pValue->u.iInteger);
+  }
+  return SQLITE_OK;
+}
+
+static int mergeAppendProperty(char ***pazProps, CypherValue ***papValues,
+                               int *pnCount, const char *zProp, CypherValue *pValue) {
+  char **azNew;
+  CypherValue **apNew;
+
+  azNew = (char**)sqlite3_realloc(*pazProps, sizeof(char*) * (*pnCount + 1));
+  if( !azNew ) return SQLITE_NOMEM;
+  *pazProps = azNew;
+
+  apNew = (CypherValue**)sqlite3_realloc(*papValues, sizeof(CypherValue*) * (*pnCount + 1));
+  if( !apNew ) return SQLITE_NOMEM;
+  *papValues = apNew;
+
+  (*pazProps)[*pnCount] = sqlite3_mprintf("%s", zProp ? zProp : "");
+  if( !(*pazProps)[*pnCount] ) {
+    return SQLITE_NOMEM;
+  }
+  (*papValues)[*pnCount] = pValue;
+  (*pnCount)++;
+  return SQLITE_OK;
+}
+
+static int mergeExtractPropertiesFromAst(CypherAst *pMapAst, char ***pazProps,
+                                         CypherValue ***papValues, int *pnProps) {
+  int i;
+  int rc = SQLITE_OK;
+
+  if( !pMapAst || !cypherAstIsType(pMapAst, CYPHER_AST_MAP) ) {
+    return SQLITE_OK;
+  }
+
+  for( i = 0; i < pMapAst->nChildren; i++ ) {
+    CypherAst *pPair = pMapAst->apChildren[i];
+    const char *zProp = NULL;
+    CypherAst *pValueAst = NULL;
+    CypherValue *pValueObj = NULL;
+
+    if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+    zProp = cypherAstGetValue(pPair);
+    if( pPair->nChildren > 0 ) {
+      pValueAst = pPair->apChildren[0];
+    }
+    rc = mergeLiteralAstToValue(pValueAst, &pValueObj);
+    if( rc != SQLITE_OK ) return rc;
+    rc = mergeAppendProperty(pazProps, papValues, pnProps, zProp ? zProp : "", pValueObj);
+    if( rc != SQLITE_OK ) {
+      cypherValueDestroy(pValueObj);
+      sqlite3_free(pValueObj);
+      return rc;
+    }
+  }
+  return SQLITE_OK;
+}
+
+static int mergeApplySetOpsForTarget(const char *zJson, const char *zTarget,
+                                     char ***pazProps, CypherValue ***papValues,
+                                     int *pnProps) {
+  const char *p;
+  int rc = SQLITE_OK;
+
+  if( !zJson || !zTarget || !*zTarget ) return SQLITE_OK;
+  p = zJson;
+  while( isspace((unsigned char)*p) ) p++;
+  if( *p == '\0' ) return SQLITE_OK;
+  if( *p != '[' ) return SQLITE_FORMAT;
+  p++;
+
+  while( 1 ) {
+    CypherValue map;
+    const char *zStart;
+    size_t nLength;
+    char *zObject;
+    const char *zPropName = NULL;
+    const char *zTargetName = NULL;
+    CypherValue *pValueEntry = NULL;
+    int i;
+
+    while( isspace((unsigned char)*p) ) p++;
+    if( *p == ']' ) break;
+    if( *p == '\0' ) return SQLITE_FORMAT;
+    if( *p != '{' ) return SQLITE_FORMAT;
+    zStart = p;
+    nLength = 0;
+    int depth = 0;
+    do {
+      if( *p == '{' ) depth++;
+      else if( *p == '}' ) depth--;
+      p++;
+      nLength++;
+    } while( *p && depth > 0 );
+    if( depth != 0 ) return SQLITE_FORMAT;
+
+    zObject = (char*)sqlite3_malloc(nLength + 1);
+    if( !zObject ) return SQLITE_NOMEM;
+    memcpy(zObject, zStart, nLength);
+    zObject[nLength] = '\0';
+
+    cypherValueInit(&map);
+    rc = cypherParseJsonProperties(zObject, &map);
+    sqlite3_free(zObject);
+    if( rc != SQLITE_OK ) {
+      cypherValueDestroy(&map);
+      return rc;
+    }
+
+    if( map.type == CYPHER_VALUE_MAP ) {
+      for( i = 0; i < map.u.map.nPairs; i++ ) {
+        const char *zKey = map.u.map.azKeys[i];
+        CypherValue *pVal = &map.u.map.apValues[i];
+        if( strcmp(zKey, "target") == 0 && pVal->type == CYPHER_VALUE_STRING ) {
+          zTargetName = pVal->u.zString;
+        } else if( strcmp(zKey, "property") == 0 && pVal->type == CYPHER_VALUE_STRING ) {
+          zPropName = pVal->u.zString;
+        } else if( strcmp(zKey, "value") == 0 ) {
+          pValueEntry = pVal;
+        }
+      }
+    }
+
+    if( zTargetName && zPropName && pValueEntry &&
+        strcmp(zTargetName, zTarget) == 0 ) {
+      CypherValue *pCopy = cypherValueCopy(pValueEntry);
+      if( !pCopy ) {
+        cypherValueDestroy(&map);
+        return SQLITE_NOMEM;
+      }
+      rc = mergeAppendProperty(pazProps, papValues, pnProps, zPropName, pCopy);
+      if( rc != SQLITE_OK ) {
+        cypherValueDestroy(pCopy);
+        sqlite3_free(pCopy);
+        cypherValueDestroy(&map);
+        return rc;
+      }
+    }
+
+    cypherValueDestroy(&map);
+    while( isspace((unsigned char)*p) ) p++;
+    if( *p == ',' ) {
+      p++;
+      continue;
+    }
+  }
+
+  return SQLITE_OK;
+}
+
+static int mergeInitNodeOpFromPattern(const MergePatternNode *pPattern,
+                                      const char *zAliasFallback,
+                                      const char *zOnCreateJson,
+                                      const char *zOnMatchJson,
+                                      MergeNodeOp *pOp) {
+  const char *zAlias = NULL;
+  int rc = SQLITE_OK;
+  int i;
+
+  if( !pOp ) return SQLITE_MISUSE;
+
+  if( pPattern && pPattern->zAlias ) {
+    zAlias = pPattern->zAlias;
+  } else {
+    zAlias = zAliasFallback;
+  }
+
+  if( zAlias ) {
+    pOp->zVariable = sqlite3_mprintf("%s", zAlias);
+    if( !pOp->zVariable ) return SQLITE_NOMEM;
+  }
+
+  if( pPattern && pPattern->nLabels > 0 && pPattern->azLabels ) {
+    pOp->azLabels = (char**)sqlite3_malloc(sizeof(char*) * pPattern->nLabels);
+    if( !pOp->azLabels ) return SQLITE_NOMEM;
+    memset(pOp->azLabels, 0, sizeof(char*) * pPattern->nLabels);
+    for( i = 0; i < pPattern->nLabels; i++ ) {
+      pOp->azLabels[i] = sqlite3_mprintf("%s", pPattern->azLabels[i]);
+      if( !pOp->azLabels[i] ) return SQLITE_NOMEM;
+    }
+    pOp->nLabels = pPattern->nLabels;
+  }
+
+  if( pPattern ) {
+    rc = mergeExtractPropertiesFromAst(pPattern->pProperties,
+                                       &pOp->azMatchProps,
+                                       &pOp->apMatchValues,
+                                       &pOp->nMatchProps);
+    if( rc != SQLITE_OK ) return rc;
+  }
+
+  if( zAlias ) {
+    rc = mergeApplySetOpsForTarget(zOnCreateJson, zAlias,
+                                   &pOp->azOnCreateProps,
+                                   &pOp->apOnCreateValues,
+                                   &pOp->nOnCreateProps);
+    if( rc != SQLITE_OK ) return rc;
+    rc = mergeApplySetOpsForTarget(zOnMatchJson, zAlias,
+                                   &pOp->azOnMatchProps,
+                                   &pOp->apOnMatchValues,
+                                   &pOp->nOnMatchProps);
+    if( rc != SQLITE_OK ) return rc;
+  }
+
+  return rc;
+}
+
+static int mergePopulateRelOpFromDetails(const MergeClauseDetails *pDetails,
+                                         PhysicalPlanNode *pPlan,
+                                         MergeRelOp *pRelOp) {
+  int rc;
+  const char *zFromAlias = NULL;
+  const char *zToAlias = NULL;
+
+  if( !pDetails || !pRelOp || !pPlan ) return SQLITE_MISUSE;
+  if( !pDetails->bHasRelationship ) return SQLITE_MISUSE;
+
+  pRelOp->pFromNode = cypherMergeNodeOpCreate();
+  pRelOp->pToNode = cypherMergeNodeOpCreate();
+  if( !pRelOp->pFromNode || !pRelOp->pToNode ) return SQLITE_NOMEM;
+
+  zFromAlias = pDetails->targetNode.zAlias ? pDetails->targetNode.zAlias : pPlan->zAlias;
+  zToAlias = pDetails->relatedNode.zAlias ? pDetails->relatedNode.zAlias : NULL;
+
+  rc = mergeInitNodeOpFromPattern(&pDetails->targetNode, zFromAlias,
+                                  pPlan->zOnCreateJson, pPlan->zOnMatchJson,
+                                  pRelOp->pFromNode);
+  if( rc != SQLITE_OK ) return rc;
+
+  rc = mergeInitNodeOpFromPattern(&pDetails->relatedNode, zToAlias,
+                                  pPlan->zOnCreateJson, pPlan->zOnMatchJson,
+                                  pRelOp->pToNode);
+  if( rc != SQLITE_OK ) return rc;
+
+  if( pDetails->relationship.zAlias ) {
+    pRelOp->zRelVar = sqlite3_mprintf("%s", pDetails->relationship.zAlias);
+    if( !pRelOp->zRelVar ) return SQLITE_NOMEM;
+  } else if( pPlan->zAlias ) {
+    pRelOp->zRelVar = sqlite3_mprintf("%s", pPlan->zAlias);
+    if( !pRelOp->zRelVar ) return SQLITE_NOMEM;
+  }
+
+  if( pDetails->relationship.zType ) {
+    pRelOp->zRelType = sqlite3_mprintf("%s", pDetails->relationship.zType);
+    if( !pRelOp->zRelType ) return SQLITE_NOMEM;
+  }
+
+  pRelOp->iDirection = pDetails->relationship.iDirection;
+
+  rc = mergeExtractPropertiesFromAst(pDetails->relationship.pProperties,
+                                     &pRelOp->azMatchProps,
+                                     &pRelOp->apMatchValues,
+                                     &pRelOp->nMatchProps);
+  if( rc != SQLITE_OK ) return rc;
+
+  if( pDetails->relationship.zAlias ) {
+    rc = mergeApplySetOpsForTarget(pPlan->zOnCreateJson,
+                                   pDetails->relationship.zAlias,
+                                   &pRelOp->azOnCreateProps,
+                                   &pRelOp->apOnCreateValues,
+                                   &pRelOp->nOnCreateProps);
+    if( rc != SQLITE_OK ) return rc;
+    rc = mergeApplySetOpsForTarget(pPlan->zOnMatchJson,
+                                   pDetails->relationship.zAlias,
+                                   &pRelOp->azOnMatchProps,
+                                   &pRelOp->apOnMatchValues,
+                                   &pRelOp->nOnMatchProps);
+    if( rc != SQLITE_OK ) return rc;
+  }
+
+  return SQLITE_OK;
 }
 
 /*
@@ -1543,14 +1955,135 @@ static CypherIterator *createWriteIteratorWrapper(PhysicalPlanNode *pPlan, Execu
   return pIterator;
 }
 
-/*
-** Stub implementations for other mutation iterators
-** TODO: Implement full functionality
-*/
+static int mergeIteratorOpen(CypherIterator *pIterator) {
+  pIterator->bOpened = 1;
+  return SQLITE_OK;
+}
+
+static int mergeIteratorNext(CypherIterator *pIterator, CypherResult *pResult) {
+  MergeIteratorData *pData = (MergeIteratorData*)pIterator->pIterData;
+  ExecutionContext *pCtx = pIterator->pContext;
+  PhysicalPlanNode *pPlan = pIterator->pPlan;
+  CypherWriteContext *pWriteCtx = NULL;
+  int rc = SQLITE_OK;
+
+  if( pData->bExecuted ) return SQLITE_DONE;
+  if( !pData->pDetails ) return SQLITE_MISUSE;
+
+  pWriteCtx = cypherWriteContextCreate(pCtx->pDb, pCtx->pGraph, pCtx);
+  if( !pWriteCtx ) return SQLITE_NOMEM;
+
+  pResult->nColumns = 0;
+
+  if( pData->pDetails->bHasRelationship ) {
+    MergeRelOp *pRelOp = cypherMergeRelOpCreate();
+    if( !pRelOp ) {
+      cypherWriteContextDestroy(pWriteCtx);
+      return SQLITE_NOMEM;
+    }
+    rc = mergePopulateRelOpFromDetails(pData->pDetails, pPlan, pRelOp);
+    if( rc == SQLITE_OK ) {
+      rc = cypherMergeRelationship(pWriteCtx, pRelOp);
+    }
+    if( rc == SQLITE_OK ) {
+      CypherValue relValue;
+      const char *zAlias = pRelOp->zRelVar ? pRelOp->zRelVar :
+                           (pPlan->zAlias ? pPlan->zAlias : "relationship");
+      cypherValueInit(&relValue);
+      cypherValueSetRelationship(&relValue, pRelOp->iRelId);
+      rc = cypherResultAddColumn(pResult, zAlias, &relValue);
+      cypherValueDestroy(&relValue);
+    }
+    cypherMergeRelOpDestroy(pRelOp);
+  } else {
+    MergeNodeOp *pNodeOp = cypherMergeNodeOpCreate();
+    if( !pNodeOp ) {
+      cypherWriteContextDestroy(pWriteCtx);
+      return SQLITE_NOMEM;
+    }
+    rc = mergeInitNodeOpFromPattern(&pData->pDetails->targetNode,
+                                    pPlan->zAlias,
+                                    pPlan->zOnCreateJson,
+                                    pPlan->zOnMatchJson,
+                                    pNodeOp);
+    fprintf(stderr, "DEBUG fallback check nodeMatch=%d detailsMatch=%d hasRel=%d\n",
+            pNodeOp->nMatchProps,
+            pData->pDetails->nMatchProps,
+            pData->pDetails->bHasRelationship);
+    if( rc == SQLITE_OK &&
+        !pData->pDetails->bHasRelationship &&
+        pNodeOp->nMatchProps == 0 &&
+        pData->pDetails->nMatchProps > 0 ) {
+      fprintf(stderr, "DEBUG applying fallback match props count=%d\n", pData->pDetails->nMatchProps);
+      rc = mergeApplyMatchPropsFromDetails(pData->pDetails, pNodeOp, pCtx);
+    }
+    if( rc == SQLITE_OK ) {
+      rc = cypherMergeNode(pWriteCtx, pNodeOp);
+    }
+    if( rc == SQLITE_OK ) {
+      CypherValue nodeValue;
+      const char *zAlias = pNodeOp->zVariable ? pNodeOp->zVariable :
+                           (pPlan->zAlias ? pPlan->zAlias : "node");
+      cypherValueInit(&nodeValue);
+      cypherValueSetNode(&nodeValue, pNodeOp->iNodeId);
+      rc = cypherResultAddColumn(pResult, zAlias, &nodeValue);
+      cypherValueDestroy(&nodeValue);
+    }
+    cypherMergeNodeOpDestroy(pNodeOp);
+  }
+
+  cypherWriteContextDestroy(pWriteCtx);
+  if( rc != SQLITE_OK ) return rc;
+
+  pData->bExecuted = 1;
+  return SQLITE_OK;
+}
+
+static int mergeIteratorClose(CypherIterator *pIterator) {
+  pIterator->bOpened = 0;
+  return SQLITE_OK;
+}
+
+static void mergeIteratorDestroy(CypherIterator *pIterator) {
+  if( pIterator && pIterator->pIterData ) {
+    sqlite3_free(pIterator->pIterData);
+  }
+}
 
 static CypherIterator *mergeWriteIteratorWrapper(PhysicalPlanNode *pPlan, ExecutionContext *pContext) {
-  /* For now, MERGE uses same logic as CREATE */
-  return createWriteIteratorWrapper(pPlan, pContext);
+  MergeClauseDetails *pDetails = (MergeClauseDetails*)pPlan->pExecState;
+  CypherIterator *pIterator;
+  MergeIteratorData *pData;
+
+  fprintf(stderr, "DEBUG mergeWriteIteratorWrapper called, pDetails=%p\n", (void*)pDetails);
+  if( !pDetails ) {
+    fprintf(stderr, "DEBUG mergeWriteIteratorWrapper: NO DETAILS! Falling back to CREATE\n");
+    return createWriteIteratorWrapper(pPlan, pContext);
+  }
+  fprintf(stderr, "DEBUG mergeWriteIteratorWrapper: has details, nMatchProps=%d hasRel=%d\n",
+          pDetails->nMatchProps, pDetails->bHasRelationship);
+
+  pIterator = sqlite3_malloc(sizeof(CypherIterator));
+  if( !pIterator ) return NULL;
+  pData = sqlite3_malloc(sizeof(MergeIteratorData));
+  if( !pData ) {
+    sqlite3_free(pIterator);
+    return NULL;
+  }
+
+  memset(pIterator, 0, sizeof(CypherIterator));
+  memset(pData, 0, sizeof(MergeIteratorData));
+  pData->pDetails = pDetails;
+
+  pIterator->xOpen = mergeIteratorOpen;
+  pIterator->xNext = mergeIteratorNext;
+  pIterator->xClose = mergeIteratorClose;
+  pIterator->xDestroy = mergeIteratorDestroy;
+  pIterator->pContext = pContext;
+  pIterator->pPlan = pPlan;
+  pIterator->pIterData = pData;
+
+  return pIterator;
 }
 
 static CypherIterator *setWriteIteratorWrapper(PhysicalPlanNode *pPlan, ExecutionContext *pContext) {

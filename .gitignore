@@ -182,3 +182,4 @@ docs/_build/
 docs/.doctrees/
 *.pdf
 
+*.c.*

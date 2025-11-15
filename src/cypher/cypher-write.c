@@ -205,6 +205,203 @@ static char *cypherSanitizeString(const char *zInput) {
     return zSanitized;
 }
 
+typedef struct CypherPropertyEntry {
+    char *zKey;
+    char *zValueJson;
+} CypherPropertyEntry;
+
+typedef struct CypherPropertyAccumulator {
+    CypherPropertyEntry *aEntries;
+    int nEntries;
+    int nAlloc;
+} CypherPropertyAccumulator;
+
+static void cypherPropertyAccumulatorInit(CypherPropertyAccumulator *pAcc) {
+    if (pAcc) {
+        memset(pAcc, 0, sizeof(*pAcc));
+    }
+}
+
+static void cypherPropertyAccumulatorReset(CypherPropertyAccumulator *pAcc) {
+    if (!pAcc) return;
+    for (int i = 0; i < pAcc->nEntries; i++) {
+        sqlite3_free(pAcc->aEntries[i].zKey);
+        sqlite3_free(pAcc->aEntries[i].zValueJson);
+    }
+    sqlite3_free(pAcc->aEntries);
+    memset(pAcc, 0, sizeof(*pAcc));
+}
+
+static int cypherPropertyAccumulatorUpsert(CypherPropertyAccumulator *pAcc,
+                                           const char *zKey,
+                                           const CypherValue *pValue) {
+    char *zSanitized = NULL;
+    char *zJsonValue = NULL;
+    
+    if (!pAcc || !zKey) return SQLITE_OK;
+    
+    zSanitized = cypherSanitizeString(zKey);
+    if (!zSanitized) return SQLITE_NOMEM;
+    
+    if (pValue) {
+        zJsonValue = cypherValueToJson(pValue);
+    } else {
+        zJsonValue = sqlite3_mprintf("null");
+    }
+    if (!zJsonValue) {
+        sqlite3_free(zSanitized);
+        return SQLITE_NOMEM;
+    }
+    
+    for (int i = 0; i < pAcc->nEntries; i++) {
+        if (strcmp(pAcc->aEntries[i].zKey, zSanitized) == 0) {
+            sqlite3_free(pAcc->aEntries[i].zKey);
+            sqlite3_free(pAcc->aEntries[i].zValueJson);
+            pAcc->aEntries[i].zKey = zSanitized;
+            pAcc->aEntries[i].zValueJson = zJsonValue;
+            return SQLITE_OK;
+        }
+    }
+    
+    if (pAcc->nEntries >= pAcc->nAlloc) {
+        int nNew = pAcc->nAlloc ? pAcc->nAlloc * 2 : 8;
+        CypherPropertyEntry *aNew = sqlite3_realloc(pAcc->aEntries, nNew * sizeof(*aNew));
+        if (!aNew) {
+            sqlite3_free(zSanitized);
+            sqlite3_free(zJsonValue);
+            return SQLITE_NOMEM;
+        }
+        pAcc->aEntries = aNew;
+        pAcc->nAlloc = nNew;
+    }
+    
+    pAcc->aEntries[pAcc->nEntries].zKey = zSanitized;
+    pAcc->aEntries[pAcc->nEntries].zValueJson = zJsonValue;
+    pAcc->nEntries++;
+    return SQLITE_OK;
+}
+
+static char *cypherPropertyAccumulatorFinish(CypherPropertyAccumulator *pAcc) {
+    sqlite3_str *pStr;
+    char *zJson;
+    
+    if (!pAcc) return NULL;
+    
+    pStr = sqlite3_str_new(NULL);
+    if (!pStr) return NULL;
+    
+    sqlite3_str_appendall(pStr, "{");
+    for (int i = 0; i < pAcc->nEntries; i++) {
+        if (i > 0) sqlite3_str_appendall(pStr, ",");
+        sqlite3_str_appendf(pStr, "\"%s\":%s",
+                            pAcc->aEntries[i].zKey,
+                            pAcc->aEntries[i].zValueJson);
+    }
+    sqlite3_str_appendall(pStr, "}");
+    
+    zJson = sqlite3_str_finish(pStr);
+    if (!zJson) {
+        sqlite3_str_reset(pStr);
+        sqlite3_str_finish(pStr);
+    }
+    return zJson;
+}
+
+static char *cypherMergePropertiesToJson(char **azMatchProps, CypherValue **apMatchValues, int nMatchProps,
+                                         char **azCreateProps, CypherValue **apCreateValues, int nCreateProps) {
+    CypherPropertyAccumulator acc;
+    char *zJson;
+    int rc = SQLITE_OK;
+    
+    cypherPropertyAccumulatorInit(&acc);
+    
+    for (int i = 0; rc == SQLITE_OK && i < nMatchProps; i++) {
+        rc = cypherPropertyAccumulatorUpsert(&acc,
+                                             azMatchProps ? azMatchProps[i] : NULL,
+                                             apMatchValues ? apMatchValues[i] : NULL);
+    }
+    for (int i = 0; rc == SQLITE_OK && i < nCreateProps; i++) {
+        rc = cypherPropertyAccumulatorUpsert(&acc,
+                                             azCreateProps ? azCreateProps[i] : NULL,
+                                             apCreateValues ? apCreateValues[i] : NULL);
+    }
+    
+    if (rc != SQLITE_OK) {
+        cypherPropertyAccumulatorReset(&acc);
+        return NULL;
+    }
+    
+    zJson = cypherPropertyAccumulatorFinish(&acc);
+    cypherPropertyAccumulatorReset(&acc);
+    return zJson;
+}
+
+static void cypherStmtCacheFinalize(CypherStmtCache *pCache) {
+    if (!pCache) return;
+    if (pCache->pNodeExists) {
+        sqlite3_finalize(pCache->pNodeExists);
+        pCache->pNodeExists = NULL;
+    }
+    if (pCache->pNodePayload) {
+        sqlite3_finalize(pCache->pNodePayload);
+        pCache->pNodePayload = NULL;
+    }
+}
+
+static sqlite3_stmt *cypherStmtCacheAcquire(CypherWriteContext *pCtx,
+                                            sqlite3_stmt **ppStmt,
+                                            const char *zSql) {
+    if (!pCtx || !ppStmt || !zSql || !pCtx->pDb) return NULL;
+    if (*ppStmt) {
+        sqlite3_reset(*ppStmt);
+        sqlite3_clear_bindings(*ppStmt);
+        return *ppStmt;
+    }
+    
+    if (sqlite3_prepare_v2(pCtx->pDb, zSql, -1, ppStmt, NULL) != SQLITE_OK) {
+        *ppStmt = NULL;
+        return NULL;
+    }
+    return *ppStmt;
+}
+
+static sqlite3_stmt *cypherStmtCacheAcquireNodePayload(CypherWriteContext *pCtx) {
+    return cypherStmtCacheAcquire(
+        pCtx,
+        &pCtx->stmtCache.pNodePayload,
+        "SELECT labels, properties FROM graph_nodes WHERE node_id = ?");
+}
+
+static int cypherCachedNodeExists(CypherWriteContext *pCtx, sqlite3_int64 iNodeId) {
+    sqlite3_stmt *pStmt;
+    int rc;
+    int bExists = 0;
+    
+    if (!pCtx || iNodeId <= 0) return 0;
+    
+    pStmt = cypherStmtCacheAcquire(
+        pCtx,
+        &pCtx->stmtCache.pNodeExists,
+        "SELECT 1 FROM graph_nodes WHERE node_id = ? LIMIT 1");
+    if (!pStmt) return 0;
+    
+    rc = sqlite3_bind_int64(pStmt, 1, iNodeId);
+    if (rc != SQLITE_OK) {
+        sqlite3_reset(pStmt);
+        sqlite3_clear_bindings(pStmt);
+        return 0;
+    }
+    
+    rc = sqlite3_step(pStmt);
+    if (rc == SQLITE_ROW) {
+        bExists = 1;
+    }
+    
+    sqlite3_reset(pStmt);
+    sqlite3_clear_bindings(pStmt);
+    return bExists;
+}
+
 /*
 ** Write context management functions.
 */
@@ -282,9 +479,32 @@ CypherWriteContext *cypherWriteContextCreate(sqlite3 *pDb, GraphVtab *pGraph,
     pCtx->pGraph = pGraph;
     pCtx->pExecContext = pExecContext;
     pCtx->bAutoCommit = 1;  /* Default to auto-commit */
-    pCtx->iNextNodeId = 1;  /* Start node IDs at 1 */
-    pCtx->iNextRelId = 1;   /* Start relationship IDs at 1 */
-    
+
+    /* Initialize next IDs based on existing data in the database */
+    sqlite3_stmt *pStmt = NULL;
+    sqlite3_int64 iMaxNodeId = 0;
+    sqlite3_int64 iMaxEdgeId = 0;
+
+    /* Get max node ID */
+    if (sqlite3_prepare_v2(pDb, "SELECT COALESCE(MAX(id), 0) FROM graph_nodes", -1, &pStmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(pStmt) == SQLITE_ROW) {
+            iMaxNodeId = sqlite3_column_int64(pStmt, 0);
+        }
+        sqlite3_finalize(pStmt);
+        pStmt = NULL;
+    }
+
+    /* Get max edge ID */
+    if (sqlite3_prepare_v2(pDb, "SELECT COALESCE(MAX(id), 0) FROM graph_edges", -1, &pStmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(pStmt) == SQLITE_ROW) {
+            iMaxEdgeId = sqlite3_column_int64(pStmt, 0);
+        }
+        sqlite3_finalize(pStmt);
+    }
+
+    pCtx->iNextNodeId = iMaxNodeId + 1;  /* Start from max + 1 */
+    pCtx->iNextRelId = iMaxEdgeId + 1;   /* Start from max + 1 */
+
     return pCtx;
 }
 
@@ -313,6 +533,7 @@ void cypherWriteContextDestroy(CypherWriteContext *pCtx) {
         sqlite3_free(pCtx->zErrorMsg);
     }
     
+    cypherStmtCacheFinalize(&pCtx->stmtCache);
     sqlite3_free(pCtx);
 }
 
@@ -451,7 +672,6 @@ int cypherCreateNode(CypherWriteContext *pCtx, CreateNodeOp *pOp) {
     char *zPropsJson = NULL;
     int rc = SQLITE_OK;
     int i;
-    
     /* @SELF_REVIEW.md Section 2.2: Input Validation Thoroughness */
     if (!pCtx) return SQLITE_MISUSE;
     if (!pOp) return SQLITE_MISUSE;
@@ -1034,6 +1254,30 @@ int cypherValidateNodeExists(CypherWriteContext *pCtx, sqlite3_int64 iNodeId) {
     return (bExists > 0) ? SQLITE_OK : SQLITE_ERROR;
 }
 
+int cypherValidateRelationshipExists(CypherWriteContext *pCtx, sqlite3_int64 iRelId) {
+    sqlite3_stmt *pStmt = NULL;
+    char *zSql;
+    int rc;
+    int bExists = 0;
+    
+    if (!pCtx || !pCtx->pGraph || iRelId <= 0) return SQLITE_ERROR;
+    
+    zSql = sqlite3_mprintf("SELECT 1 FROM graph_edges WHERE edge_id = %lld", iRelId);
+    if (!zSql) return SQLITE_NOMEM;
+    
+    rc = sqlite3_prepare_v2(pCtx->pGraph->pDb, zSql, -1, &pStmt, NULL);
+    sqlite3_free(zSql);
+    if (rc != SQLITE_OK) return rc;
+    
+    rc = sqlite3_step(pStmt);
+    if (rc == SQLITE_ROW) {
+        bExists = 1;
+    }
+    sqlite3_finalize(pStmt);
+    
+    return bExists ? SQLITE_OK : SQLITE_ERROR;
+}
+
 /*
 ** Check if a node matches the given labels and properties.
 ** Returns 1 if match, 0 if no match, -1 on error.
@@ -1051,7 +1295,7 @@ int cypherNodeMatches(CypherWriteContext *pCtx, sqlite3_int64 iNodeId,
     if (!pCtx || !pCtx->pGraph || iNodeId <= 0) return 0;
     
     /* First check if node exists */
-    if (cypherStorageNodeExists(pCtx->pGraph, iNodeId) <= 0) {
+    if (!cypherCachedNodeExists(pCtx, iNodeId)) {
         return 0;
     }
     
@@ -1088,13 +1332,22 @@ int cypherNodeMatches(CypherWriteContext *pCtx, sqlite3_int64 iNodeId,
     for (i = 0; i < nProps && bMatches; i++) {
         if (!azProps[i] || !apValues[i]) continue;
         
-        char *zValueJson = cypherValueToString(apValues[i]);
+        char *zValueJson = apValues[i] ? cypherValueToJson(apValues[i]) : sqlite3_mprintf("null");
+        int bIsNull = 0;
         if (!zValueJson) return 0;
+        bIsNull = (sqlite3_stricmp(zValueJson, "null") == 0);
         
-        zSql = sqlite3_mprintf(
-            "SELECT 1 FROM graph_nodes WHERE node_id = %lld "
-            "AND json_extract(properties, '$.%s') = json('%s')",
-            iNodeId, azProps[i], zValueJson);
+        if (bIsNull) {
+            zSql = sqlite3_mprintf(
+                "SELECT 1 FROM graph_nodes WHERE node_id = %lld "
+                "AND json_extract(properties, '$.%q') IS NULL",
+                iNodeId, azProps[i]);
+        } else {
+            zSql = sqlite3_mprintf(
+                "SELECT 1 FROM graph_nodes WHERE node_id = %lld "
+                "AND json_extract(properties, '$.%q') = json(%Q)",
+                iNodeId, azProps[i], zValueJson);
+        }
         
         sqlite3_free(zValueJson);
         
@@ -1124,73 +1377,223 @@ int cypherNodeMatches(CypherWriteContext *pCtx, sqlite3_int64 iNodeId,
 sqlite3_int64 cypherFindMatchingNode(CypherWriteContext *pCtx,
                                     char **azLabels, int nLabels,
                                     char **azProps, CypherValue **apValues, int nProps) {
-    char *zSql = NULL;
     sqlite3_stmt *pStmt = NULL;
-    int rc = SQLITE_OK;
+    sqlite3_str *pSql = NULL;
+    char *zSql = NULL;
     sqlite3_int64 iNodeId = 0;
-    int i;
+    int rc;
     
     if (!pCtx || !pCtx->pGraph) return 0;
     
-    /* Build query to find matching node */
-    if (nLabels > 0) {
-        /* Start with label-based search */
-        zSql = sqlite3_mprintf(
-            "SELECT node_id FROM graph_nodes WHERE "
-            "json_extract(labels, '$[0]') = '%s'",
-            azLabels[0]
-        );
-        
-        /* Add additional label filters */
-        for (i = 1; i < nLabels; i++) {
-            char *zNewSql = sqlite3_mprintf(
-                "%s AND json_extract(labels, '$[%d]') = '%s'",
-                zSql, i, azLabels[i]
-            );
-            sqlite3_free(zSql);
-            zSql = zNewSql;
-        }
-    } else {
-        /* No labels specified, search all nodes */
-        zSql = sqlite3_mprintf("SELECT node_id FROM graph_nodes");
+    pSql = sqlite3_str_new(NULL);
+    if (!pSql) return 0;
+    
+    sqlite3_str_appendall(pSql, "SELECT id FROM graph_nodes WHERE 1");
+    
+    for (int i = 0; i < nLabels; i++) {
+        if (!azLabels || !azLabels[i]) continue;
+        sqlite3_str_appendf(pSql,
+                            " AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = %Q)",
+                            azLabels[i]);
     }
     
-    if (!zSql) return 0;
-    
-    /* Add property filters */
-    for (i = 0; i < nProps; i++) {
-        char *zValueJson = cypherValueToJson(apValues[i]);
-        if (zValueJson) {
-            char *zNewSql = sqlite3_mprintf(
-                "%s AND json_extract(properties, '$.%s') = json('%s')",
-                zSql, azProps[i], zValueJson
-            );
-            sqlite3_free(zSql);
+    for (int i = 0; i < nProps; i++) {
+        if (!azProps || !azProps[i]) continue;
+        if (!apValues || !apValues[i]) {
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') IS NULL",
+                                azProps[i]);
+            continue;
+        }
+
+        CypherValue *pValue = apValues[i];
+
+        if (pValue->type == CYPHER_VALUE_NULL) {
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') IS NULL",
+                                azProps[i]);
+        } else if (pValue->type == CYPHER_VALUE_STRING) {
+            /* For strings, json_extract returns the unwrapped text value */
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') = %Q",
+                                azProps[i], pValue->u.zString ? pValue->u.zString : "");
+        } else if (pValue->type == CYPHER_VALUE_INTEGER) {
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') = %lld",
+                                azProps[i], pValue->u.iInteger);
+        } else if (pValue->type == CYPHER_VALUE_FLOAT) {
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') = %.15g",
+                                azProps[i], pValue->u.rFloat);
+        } else if (pValue->type == CYPHER_VALUE_BOOLEAN) {
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') = %d",
+                                azProps[i], pValue->u.bBoolean ? 1 : 0);
+        } else {
+            /* For other types, use JSON comparison */
+            char *zValueJson = cypherValueToJson(pValue);
+            if (!zValueJson) {
+                sqlite3_str_reset(pSql);
+                sqlite3_str_finish(pSql);
+                return 0;
+            }
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') = json(%Q)",
+                                azProps[i], zValueJson);
             sqlite3_free(zValueJson);
-            zSql = zNewSql;
         }
     }
     
-    /* Add LIMIT 1 to get first match */
-    char *zFinalSql = sqlite3_mprintf("%s LIMIT 1", zSql);
-    sqlite3_free(zSql);
-    zSql = zFinalSql;
+    sqlite3_str_appendall(pSql, " ORDER BY id LIMIT 1");
     
-    if (!zSql) return 0;
-    
-    /* Execute the query */
+    zSql = sqlite3_str_finish(pSql);
+    if (!zSql) {
+        sqlite3_str_reset(pSql);
+        sqlite3_str_finish(pSql);
+        return 0;
+    }
+
+    fprintf(stderr, "DEBUG cypherFindMatchingNode SQL: %s\n", zSql);
+
+    /* Debug: show all nodes in database */
+    sqlite3_stmt *pDebugStmt = NULL;
+    if (sqlite3_prepare_v2(pCtx->pGraph->pDb, "SELECT id, labels, properties FROM graph_nodes", -1, &pDebugStmt, NULL) == SQLITE_OK) {
+        fprintf(stderr, "DEBUG Current nodes in database:\n");
+        while (sqlite3_step(pDebugStmt) == SQLITE_ROW) {
+            fprintf(stderr, "  id=%lld labels=%s props=%s\n",
+                    sqlite3_column_int64(pDebugStmt, 0),
+                    sqlite3_column_text(pDebugStmt, 1),
+                    sqlite3_column_text(pDebugStmt, 2));
+        }
+        sqlite3_finalize(pDebugStmt);
+    }
+
     rc = sqlite3_prepare_v2(pCtx->pGraph->pDb, zSql, -1, &pStmt, NULL);
-    if (rc == SQLITE_OK) {
-        rc = sqlite3_step(pStmt);
-        if (rc == SQLITE_ROW) {
-            iNodeId = sqlite3_column_int64(pStmt, 0);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "DEBUG cypherFindMatchingNode prepare failed: %s\n", sqlite3_errmsg(pCtx->pGraph->pDb));
+        sqlite3_free(zSql);
+        return 0;
+    }
+    sqlite3_free(zSql);
+
+    rc = sqlite3_step(pStmt);
+    if (rc == SQLITE_ROW) {
+        iNodeId = sqlite3_column_int64(pStmt, 0);
+        fprintf(stderr, "DEBUG cypherFindMatchingNode found node id=%lld\n", iNodeId);
+    } else {
+        fprintf(stderr, "DEBUG cypherFindMatchingNode no match found (rc=%d)\n", rc);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "DEBUG   error: %s\n", sqlite3_errmsg(pCtx->pGraph->pDb));
         }
     }
-    
+
     sqlite3_finalize(pStmt);
-    sqlite3_free(zSql);
-    
     return iNodeId;
+}
+
+static sqlite3_int64 cypherFindMatchingRelationship(CypherWriteContext *pCtx, MergeRelOp *pOp) {
+    sqlite3_stmt *pStmt = NULL;
+    sqlite3_str *pSql = NULL;
+    char *zSql = NULL;
+    sqlite3_int64 iRelId = 0;
+    int rc;
+    
+    if (!pCtx || !pCtx->pGraph || !pOp) return 0;
+    if (pOp->iFromNodeId <= 0 || pOp->iToNodeId <= 0) return 0;
+    
+    pSql = sqlite3_str_new(NULL);
+    if (!pSql) return 0;
+
+    sqlite3_str_appendall(pSql, "SELECT id FROM graph_edges WHERE 1");
+
+    if (pOp->iDirection == 0) {
+        sqlite3_str_appendf(pSql,
+                            " AND ((source = %lld AND target = %lld)"
+                            " OR (source = %lld AND target = %lld))",
+                            pOp->iFromNodeId, pOp->iToNodeId,
+                            pOp->iToNodeId, pOp->iFromNodeId);
+    } else {
+        sqlite3_str_appendf(pSql,
+                            " AND source = %lld AND target = %lld",
+                            pOp->iFromNodeId, pOp->iToNodeId);
+    }
+
+    if (pOp->zRelType && pOp->zRelType[0]) {
+        sqlite3_str_appendf(pSql, " AND edge_type = %Q", pOp->zRelType);
+    }
+    
+    for (int i = 0; i < pOp->nMatchProps; i++) {
+        char *zValueJson = NULL;
+        int bIsNull = 0;
+        if (!pOp->azMatchProps || !pOp->azMatchProps[i]) continue;
+        if (pOp->apMatchValues && pOp->apMatchValues[i]) {
+            zValueJson = cypherValueToJson(pOp->apMatchValues[i]);
+        } else {
+            zValueJson = sqlite3_mprintf("null");
+        }
+        if (!zValueJson) {
+            sqlite3_str_reset(pSql);
+            sqlite3_str_finish(pSql);
+            return 0;
+        }
+        bIsNull = (sqlite3_stricmp(zValueJson, "null") == 0);
+        if (bIsNull) {
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') IS NULL",
+                                pOp->azMatchProps[i]);
+        } else {
+            sqlite3_str_appendf(pSql,
+                                " AND json_extract(properties, '$.%q') = json(%Q)",
+                                pOp->azMatchProps[i], zValueJson);
+        }
+        sqlite3_free(zValueJson);
+    }
+    
+    sqlite3_str_appendall(pSql, " ORDER BY id LIMIT 1");
+
+    zSql = sqlite3_str_finish(pSql);
+    if (!zSql) {
+        sqlite3_str_reset(pSql);
+        sqlite3_str_finish(pSql);
+        return 0;
+    }
+
+    fprintf(stderr, "DEBUG cypherFindMatchingRelationship SQL: %s\n", zSql);
+
+    /* Debug: show all edges in database */
+    sqlite3_stmt *pDebugStmt = NULL;
+    if (sqlite3_prepare_v2(pCtx->pGraph->pDb, "SELECT id, source, target, edge_type FROM graph_edges", -1, &pDebugStmt, NULL) == SQLITE_OK) {
+        fprintf(stderr, "DEBUG Current edges in database:\n");
+        while (sqlite3_step(pDebugStmt) == SQLITE_ROW) {
+            fprintf(stderr, "  id=%lld source=%lld target=%lld edge_type=%s\n",
+                    sqlite3_column_int64(pDebugStmt, 0),
+                    sqlite3_column_int64(pDebugStmt, 1),
+                    sqlite3_column_int64(pDebugStmt, 2),
+                    sqlite3_column_text(pDebugStmt, 3));
+        }
+        sqlite3_finalize(pDebugStmt);
+    }
+
+    rc = sqlite3_prepare_v2(pCtx->pGraph->pDb, zSql, -1, &pStmt, NULL);
+    sqlite3_free(zSql);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "DEBUG cypherFindMatchingRelationship prepare failed: %s\n", sqlite3_errmsg(pCtx->pGraph->pDb));
+        return 0;
+    }
+
+    rc = sqlite3_step(pStmt);
+    if (rc == SQLITE_ROW) {
+        iRelId = sqlite3_column_int64(pStmt, 0);
+        fprintf(stderr, "DEBUG cypherFindMatchingRelationship found relationship id=%lld\n", iRelId);
+    } else {
+        fprintf(stderr, "DEBUG cypherFindMatchingRelationship no match found (rc=%d)\n", rc);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "DEBUG   error: %s\n", sqlite3_errmsg(pCtx->pGraph->pDb));
+        }
+    }
+
+    sqlite3_finalize(pStmt);
+    return iRelId;
 }
 
 /*
@@ -1300,25 +1703,10 @@ int cypherExecuteOperations(CypherWriteContext *pCtx) {
                 break;
                 
             case CYPHER_WRITE_MERGE_NODE:
-                /* Execute actual node merge in graph storage */
-                {
-                    sqlite3_int64 iFoundId = cypherFindMatchingNode(pCtx,
-                        NULL, 0, NULL, NULL, 0); /* Basic node search */
-                    
-                    if (iFoundId > 0) {
-                        /* Node exists, update properties if needed */
-                        pOp->iNodeId = iFoundId;
-                        /* Apply ON MATCH properties if any */
-                    } else {
-                        /* Node doesn't exist, create it */
-                        if (pOp->iNodeId == 0) {
-                            pOp->iNodeId = cypherStorageGetNextNodeId(pCtx->pGraph);
-                        }
-                        rc = cypherStorageAddNode(pCtx->pGraph, pOp->iNodeId,
-                                                NULL, 0, NULL);
-                        if (rc != SQLITE_OK) return rc;
-                    }
-                }
+                /* MERGE operations are executed eagerly; nothing to replay here. */
+                break;
+            case CYPHER_WRITE_MERGE_RELATIONSHIP:
+                /* Already applied during execution */
                 break;
                 
             case CYPHER_WRITE_SET_PROPERTY:
@@ -1425,7 +1813,7 @@ int cypherRollbackOperations(CypherWriteContext *pCtx) {
             case CYPHER_WRITE_CREATE_NODE:
             case CYPHER_WRITE_MERGE_NODE:
                 /* Remove created nodes */
-                if (pOp->iNodeId > 0) {
+                if (pOp->bMergeCreated && pOp->iNodeId > 0) {
                     cypherStorageDeleteNode(pCtx->pGraph, pOp->iNodeId, 1); /* Force detach */
                 }
                 break;
@@ -1465,8 +1853,8 @@ int cypherRollbackOperations(CypherWriteContext *pCtx) {
                 break;
                 
             case CYPHER_WRITE_MERGE_RELATIONSHIP:
-                /* Remove merged relationships */
-                if (pOp->iRelId > 0) {
+                /* Remove merged relationships only if newly created */
+                if (pOp->bMergeCreated && pOp->iRelId > 0) {
                     cypherStorageDeleteEdge(pCtx->pGraph, pOp->iRelId);
                 }
                 break;
@@ -1640,11 +2028,15 @@ int cypherMergeNode(CypherWriteContext *pCtx, MergeNodeOp *pOp) {
     char *zPropsJson = NULL;
     int rc = SQLITE_OK;
     int i;
-    
     if (!pCtx || !pOp) return SQLITE_MISUSE;
-    
+    fprintf(stderr, "DEBUG cypherMergeNode matchProps=%d labels=%d\n", pOp->nMatchProps, pOp->nLabels);
+    for (i = 0; i < pOp->nMatchProps; i++) {
+        char *zVal = pOp->apMatchValues[i] ? cypherValueToJson(pOp->apMatchValues[i]) : NULL;
+        fprintf(stderr, "  prop[%d]: %s = %s\n", i, pOp->azMatchProps[i], zVal ? zVal : "(null)");
+        sqlite3_free(zVal);
+    }
     /* First, try to find an existing node that matches the criteria */
-    iFoundNodeId = cypherFindMatchingNode(pCtx, 
+    iFoundNodeId = cypherFindMatchingNode(pCtx,
                                          pOp->azLabels, pOp->nLabels,
                                          pOp->azMatchProps, pOp->apMatchValues, pOp->nMatchProps);
     
@@ -1673,7 +2065,7 @@ int cypherMergeNode(CypherWriteContext *pCtx, MergeNodeOp *pOp) {
         if (!pWriteOp) return SQLITE_NOMEM;
         
         pWriteOp->iNodeId = iFoundNodeId;
-        pWriteOp->zProperty = sqlite3_mprintf("MATCH");
+        pWriteOp->bMergeCreated = 0;
         
         rc = cypherWriteContextAddOperation(pCtx, pWriteOp);
         if (rc != SQLITE_OK) {
@@ -1683,9 +2075,11 @@ int cypherMergeNode(CypherWriteContext *pCtx, MergeNodeOp *pOp) {
         
     } else {
         /* Node not found - create new node with ON CREATE properties */
+        fprintf(stderr, "DEBUG cypherMergeNode: creating new node\n");
         pOp->iNodeId = cypherWriteContextNextNodeId(pCtx);
         pOp->bWasCreated = 1;
-        
+        fprintf(stderr, "DEBUG cypherMergeNode: assigned node ID = %lld\n", pOp->iNodeId);
+
         /* Build labels JSON array */
         if (pOp->nLabels > 0) {
             /* Build JSON array with safe bounds checking */
@@ -1720,170 +2114,183 @@ int cypherMergeNode(CypherWriteContext *pCtx, MergeNodeOp *pOp) {
             zLabelsJson = sqlite3_mprintf("[]");
         }
         
-        /* Build combined properties JSON (match props + on create props) */
-        int nAlloc = 512;
-        int nUsed = 0;
-        char *zProps = sqlite3_malloc(nAlloc);
-        if (!zProps) {
+        fprintf(stderr, "DEBUG cypherMergeNode: building properties JSON\n");
+        zPropsJson = cypherMergePropertiesToJson(pOp->azMatchProps, pOp->apMatchValues, pOp->nMatchProps,
+                                                 pOp->azOnCreateProps, pOp->apOnCreateValues, pOp->nOnCreateProps);
+        if (!zPropsJson) {
+            fprintf(stderr, "DEBUG cypherMergeNode: cypherMergePropertiesToJson failed\n");
             sqlite3_free(zLabelsJson);
             return SQLITE_NOMEM;
         }
-        
-        nUsed = snprintf(zProps, nAlloc, "{");
-        int propCount = 0;
-        
-        /* Add match properties */
-        for (i = 0; i < pOp->nMatchProps; i++) {
-            int nNeeded = 0;
-            
-            /* Calculate space needed */
-            if (pOp->apMatchValues[i]->type == CYPHER_VALUE_STRING) {
-                nNeeded = snprintf(NULL, 0, "%s\"%s\":\"%s\"",
-                                  propCount > 0 ? "," : "", pOp->azMatchProps[i],
-                                  pOp->apMatchValues[i]->u.zString);
-            } else if (pOp->apMatchValues[i]->type == CYPHER_VALUE_INTEGER) {
-                nNeeded = snprintf(NULL, 0, "%s\"%s\":%lld",
-                                  propCount > 0 ? "," : "", pOp->azMatchProps[i],
-                                  pOp->apMatchValues[i]->u.iInteger);
-            } else {
-                nNeeded = snprintf(NULL, 0, "%s\"%s\":null",
-                                  propCount > 0 ? "," : "", pOp->azMatchProps[i]);
-            }
-            
-            /* Resize if needed */
-            if (nUsed + nNeeded + 2 >= nAlloc) {
-                nAlloc = (nUsed + nNeeded + 256) * 2;
-                char *zNew = sqlite3_realloc(zProps, nAlloc);
-                if (!zNew) {
-                    sqlite3_free(zProps);
-                    sqlite3_free(zLabelsJson);
-                    return SQLITE_NOMEM;
-                }
-                zProps = zNew;
-            }
-            
-            /* Add the property */
-            if (pOp->apMatchValues[i]->type == CYPHER_VALUE_STRING) {
-                nUsed += snprintf(zProps + nUsed, nAlloc - nUsed,
-                                 "%s\"%s\":\"%s\"",
-                                 propCount > 0 ? "," : "", pOp->azMatchProps[i],
-                                 pOp->apMatchValues[i]->u.zString);
-            } else if (pOp->apMatchValues[i]->type == CYPHER_VALUE_INTEGER) {
-                nUsed += snprintf(zProps + nUsed, nAlloc - nUsed,
-                                 "%s\"%s\":%lld",
-                                 propCount > 0 ? "," : "", pOp->azMatchProps[i],
-                                 pOp->apMatchValues[i]->u.iInteger);
-            } else {
-                nUsed += snprintf(zProps + nUsed, nAlloc - nUsed,
-                                 "%s\"%s\":null",
-                                 propCount > 0 ? "," : "", pOp->azMatchProps[i]);
-            }
-            propCount++;
-        }
-        
-        /* Add ON CREATE properties */
-        for (i = 0; i < pOp->nOnCreateProps; i++) {
-            int nNeeded = 0;
-            
-            /* Calculate space needed */
-            if (pOp->apOnCreateValues[i]->type == CYPHER_VALUE_STRING) {
-                nNeeded = snprintf(NULL, 0, "%s\"%s\":\"%s\"",
-                                  propCount > 0 ? "," : "", pOp->azOnCreateProps[i],
-                                  pOp->apOnCreateValues[i]->u.zString);
-            } else if (pOp->apOnCreateValues[i]->type == CYPHER_VALUE_INTEGER) {
-                nNeeded = snprintf(NULL, 0, "%s\"%s\":%lld",
-                                  propCount > 0 ? "," : "", pOp->azOnCreateProps[i],
-                                  pOp->apOnCreateValues[i]->u.iInteger);
-            } else {
-                nNeeded = snprintf(NULL, 0, "%s\"%s\":null",
-                                  propCount > 0 ? "," : "", pOp->azOnCreateProps[i]);
-            }
-            
-            /* Resize if needed */
-            if (nUsed + nNeeded + 2 >= nAlloc) {
-                nAlloc = (nUsed + nNeeded + 256) * 2;
-                char *zNew = sqlite3_realloc(zProps, nAlloc);
-                if (!zNew) {
-                    sqlite3_free(zProps);
-                    sqlite3_free(zLabelsJson);
-                    return SQLITE_NOMEM;
-                }
-                zProps = zNew;
-            }
-            
-            /* Add the property */
-            if (pOp->apOnCreateValues[i]->type == CYPHER_VALUE_STRING) {
-                nUsed += snprintf(zProps + nUsed, nAlloc - nUsed,
-                                 "%s\"%s\":\"%s\"",
-                                 propCount > 0 ? "," : "", pOp->azOnCreateProps[i],
-                                 pOp->apOnCreateValues[i]->u.zString);
-            } else if (pOp->apOnCreateValues[i]->type == CYPHER_VALUE_INTEGER) {
-                nUsed += snprintf(zProps + nUsed, nAlloc - nUsed,
-                                 "%s\"%s\":%lld",
-                                 propCount > 0 ? "," : "", pOp->azOnCreateProps[i],
-                                 pOp->apOnCreateValues[i]->u.iInteger);
-            } else {
-                nUsed += snprintf(zProps + nUsed, nAlloc - nUsed,
-                                 "%s\"%s\":null",
-                                 propCount > 0 ? "," : "", pOp->azOnCreateProps[i]);
-            }
-            propCount++;
-        }
-        
-        if (nUsed + 2 < nAlloc) {
-            zProps[nUsed++] = '}';
-            zProps[nUsed] = '\0';
-        }
-        zPropsJson = zProps;
-        
+        fprintf(stderr, "DEBUG cypherMergeNode: properties JSON = %s\n", zPropsJson);
+
         /* Create write operation record for MERGE create */
+        fprintf(stderr, "DEBUG cypherMergeNode: creating write op\n");
         pWriteOp = cypherWriteOpCreate(CYPHER_WRITE_MERGE_NODE);
         if (!pWriteOp) {
             sqlite3_free(zLabelsJson);
             sqlite3_free(zPropsJson);
             return SQLITE_NOMEM;
         }
-        
+
         pWriteOp->iNodeId = pOp->iNodeId;
         pWriteOp->zNewLabels = zLabelsJson;
-        pWriteOp->zProperty = sqlite3_mprintf("CREATE");
-        
+        pWriteOp->bMergeCreated = 1;
+
         /* Add to operation log */
+        fprintf(stderr, "DEBUG cypherMergeNode: adding operation to context\n");
         rc = cypherWriteContextAddOperation(pCtx, pWriteOp);
         if (rc != SQLITE_OK) {
+            fprintf(stderr, "DEBUG cypherMergeNode: add operation failed rc=%d\n", rc);
             cypherWriteOpDestroy(pWriteOp);
             sqlite3_free(zLabelsJson);
             sqlite3_free(zPropsJson);
             return rc;
         }
-        
+
         /* Actually create node in graph storage */
         const char **azLabelPtrs = NULL;
         if (pOp->nLabels > 0) {
             azLabelPtrs = (const char**)pOp->azLabels;
         }
-        
-        rc = cypherStorageAddNode(pCtx->pGraph, pOp->iNodeId, 
-                                 azLabelPtrs, pOp->nLabels, 
+
+        fprintf(stderr, "DEBUG cypherMergeNode: calling cypherStorageAddNode id=%lld\n", pOp->iNodeId);
+        rc = cypherStorageAddNode(pCtx->pGraph, pOp->iNodeId,
+                                 azLabelPtrs, pOp->nLabels,
                                  zPropsJson);
         if (rc != SQLITE_OK) {
+            fprintf(stderr, "DEBUG cypherMergeNode: cypherStorageAddNode failed rc=%d\n", rc);
             sqlite3_free(zLabelsJson);
             sqlite3_free(zPropsJson);
             return rc;
         }
-        
+        fprintf(stderr, "DEBUG cypherMergeNode: node created successfully\n");
+
         sqlite3_free(zPropsJson);
     }
-    
+
     /* Bind variable in execution context */
+    fprintf(stderr, "DEBUG cypherMergeNode: binding variable zVariable=%s\n", pOp->zVariable ? pOp->zVariable : "(null)");
     if (pOp->zVariable) {
         CypherValue nodeValue;
         cypherValueInit(&nodeValue);
         cypherValueSetNode(&nodeValue, pOp->iNodeId);
+        fprintf(stderr, "DEBUG cypherMergeNode: calling executionContextBind\n");
         
         rc = executionContextBind(pCtx->pExecContext, pOp->zVariable, &nodeValue);
+        fprintf(stderr, "DEBUG cypherMergeNode: executionContextBind returned rc=%d\n", rc);
         cypherValueDestroy(&nodeValue);
+
+        if (rc != SQLITE_OK) {
+            return rc;
+        }
+    }
+
+    fprintf(stderr, "DEBUG cypherMergeNode: returning SQLITE_OK\n");
+    return SQLITE_OK;
+}
+
+int cypherMergeRelationship(CypherWriteContext *pCtx, MergeRelOp *pOp) {
+    CypherWriteOp *pWriteOp = NULL;
+    char *zPropsJson = NULL;
+    sqlite3_int64 iExistingRelId = 0;
+    int rc = SQLITE_OK;
+    int i;
+    MergeNodeOp *pSource;
+    MergeNodeOp *pTarget;
+    
+    if (!pCtx || !pOp || !pOp->pFromNode || !pOp->pToNode) return SQLITE_MISUSE;
+    
+    /* Execute MERGE on source/target nodes first */
+    rc = cypherMergeNode(pCtx, pOp->pFromNode);
+    if (rc != SQLITE_OK) return rc;
+    rc = cypherMergeNode(pCtx, pOp->pToNode);
+    if (rc != SQLITE_OK) return rc;
+    
+    if (pOp->iDirection < 0) {
+        pSource = pOp->pToNode;
+        pTarget = pOp->pFromNode;
+    } else {
+        pSource = pOp->pFromNode;
+        pTarget = pOp->pToNode;
+    }
+    
+    pOp->iFromNodeId = pSource->iNodeId;
+    pOp->iToNodeId = pTarget->iNodeId;
+    
+    iExistingRelId = cypherFindMatchingRelationship(pCtx, pOp);
+    if (iExistingRelId > 0) {
+        pOp->iRelId = iExistingRelId;
+        pOp->bWasCreated = 0;
         
+        /* Apply ON MATCH property updates */
+        for (i = 0; i < pOp->nOnMatchProps; i++) {
+            SetPropertyOp setOp;
+            memset(&setOp, 0, sizeof(SetPropertyOp));
+            setOp.zVariable = pOp->zRelVar;
+            setOp.zProperty = pOp->azOnMatchProps[i];
+            setOp.pValue = pOp->apOnMatchValues[i];
+            setOp.iRelId = pOp->iRelId;
+            rc = cypherSetProperty(pCtx, &setOp);
+            if (rc != SQLITE_OK) {
+                return rc;
+            }
+        }
+        
+        pWriteOp = cypherWriteOpCreate(CYPHER_WRITE_MERGE_RELATIONSHIP);
+        if (!pWriteOp) return SQLITE_NOMEM;
+        pWriteOp->iRelId = pOp->iRelId;
+        pWriteOp->iFromId = pOp->iFromNodeId;
+        pWriteOp->iToId = pOp->iToNodeId;
+        if (pOp->zRelType) {
+            pWriteOp->zRelType = sqlite3_mprintf("%s", pOp->zRelType);
+        }
+        pWriteOp->bMergeCreated = 0;
+        rc = cypherWriteContextAddOperation(pCtx, pWriteOp);
+        if (rc != SQLITE_OK) {
+            cypherWriteOpDestroy(pWriteOp);
+            return rc;
+        }
+    } else {
+        /* Create new relationship */
+        pOp->iRelId = cypherWriteContextNextRelId(pCtx);
+        zPropsJson = cypherMergePropertiesToJson(pOp->azMatchProps, pOp->apMatchValues, pOp->nMatchProps,
+                                                 pOp->azOnCreateProps, pOp->apOnCreateValues, pOp->nOnCreateProps);
+        if (!zPropsJson) return SQLITE_NOMEM;
+        
+        rc = cypherStorageAddEdge(pCtx->pGraph, pOp->iRelId,
+                                  pOp->iFromNodeId, pOp->iToNodeId,
+                                  pOp->zRelType, 1.0, zPropsJson);
+        if (rc != SQLITE_OK) {
+            sqlite3_free(zPropsJson);
+            return rc;
+        }
+        sqlite3_free(zPropsJson);
+        
+        pWriteOp = cypherWriteOpCreate(CYPHER_WRITE_MERGE_RELATIONSHIP);
+        if (!pWriteOp) return SQLITE_NOMEM;
+        pWriteOp->iRelId = pOp->iRelId;
+        pWriteOp->iFromId = pOp->iFromNodeId;
+        pWriteOp->iToId = pOp->iToNodeId;
+        if (pOp->zRelType) {
+            pWriteOp->zRelType = sqlite3_mprintf("%s", pOp->zRelType);
+        }
+        pWriteOp->bMergeCreated = 1;
+        rc = cypherWriteContextAddOperation(pCtx, pWriteOp);
+        if (rc != SQLITE_OK) {
+            cypherWriteOpDestroy(pWriteOp);
+            return rc;
+        }
+        pOp->bWasCreated = 1;
+    }
+    
+    /* Bind relationship variable */
+    if (pOp->zRelVar) {
+        CypherValue relValue;
+        cypherValueInit(&relValue);
+        cypherValueSetRelationship(&relValue, pOp->iRelId);
+        rc = executionContextBind(pCtx->pExecContext, pOp->zRelVar, &relValue);
+        cypherValueDestroy(&relValue);
         if (rc != SQLITE_OK) {
             return rc;
         }
@@ -1974,6 +2381,60 @@ void cypherMergeNodeOpDestroy(MergeNodeOp *pOp) {
     sqlite3_free(pOp);
 }
 
+MergeRelOp *cypherMergeRelOpCreate(void) {
+    MergeRelOp *pOp = (MergeRelOp*)sqlite3_malloc(sizeof(MergeRelOp));
+    if (!pOp) return NULL;
+    memset(pOp, 0, sizeof(MergeRelOp));
+    return pOp;
+}
+
+void cypherMergeRelOpDestroy(MergeRelOp *pOp) {
+    int i;
+    if (!pOp) return;
+    
+    if (pOp->pFromNode) {
+        cypherMergeNodeOpDestroy(pOp->pFromNode);
+    }
+    if (pOp->pToNode) {
+        cypherMergeNodeOpDestroy(pOp->pToNode);
+    }
+    
+    sqlite3_free(pOp->zRelVar);
+    sqlite3_free(pOp->zRelType);
+    
+    for (i = 0; i < pOp->nMatchProps; i++) {
+        sqlite3_free(pOp->azMatchProps ? pOp->azMatchProps[i] : NULL);
+        if (pOp->apMatchValues && pOp->apMatchValues[i]) {
+            cypherValueDestroy(pOp->apMatchValues[i]);
+            sqlite3_free(pOp->apMatchValues[i]);
+        }
+    }
+    sqlite3_free(pOp->azMatchProps);
+    sqlite3_free(pOp->apMatchValues);
+    
+    for (i = 0; i < pOp->nOnCreateProps; i++) {
+        sqlite3_free(pOp->azOnCreateProps ? pOp->azOnCreateProps[i] : NULL);
+        if (pOp->apOnCreateValues && pOp->apOnCreateValues[i]) {
+            cypherValueDestroy(pOp->apOnCreateValues[i]);
+            sqlite3_free(pOp->apOnCreateValues[i]);
+        }
+    }
+    sqlite3_free(pOp->azOnCreateProps);
+    sqlite3_free(pOp->apOnCreateValues);
+    
+    for (i = 0; i < pOp->nOnMatchProps; i++) {
+        sqlite3_free(pOp->azOnMatchProps ? pOp->azOnMatchProps[i] : NULL);
+        if (pOp->apOnMatchValues && pOp->apOnMatchValues[i]) {
+            cypherValueDestroy(pOp->apOnMatchValues[i]);
+            sqlite3_free(pOp->apOnMatchValues[i]);
+        }
+    }
+    sqlite3_free(pOp->azOnMatchProps);
+    sqlite3_free(pOp->apOnMatchValues);
+    
+    sqlite3_free(pOp);
+}
+
 /*
 ** SET operation functions.
 */
@@ -1985,20 +2446,29 @@ void cypherMergeNodeOpDestroy(MergeNodeOp *pOp) {
 int cypherSetProperty(CypherWriteContext *pCtx, SetPropertyOp *pOp) {
     CypherWriteOp *pWriteOp;
     int rc = SQLITE_OK;
+    int bNodeTarget;
     
     if (!pCtx || !pOp) return SQLITE_MISUSE;
-    
-    /* Validate that the target node exists */
-    rc = cypherValidateNodeExists(pCtx, pOp->iNodeId);
-    if (rc != SQLITE_OK) {
-        return rc;
+    bNodeTarget = (pOp->iNodeId > 0);
+    if ((pOp->iNodeId > 0 && pOp->iRelId > 0) ||
+        (pOp->iNodeId <= 0 && pOp->iRelId <= 0)) {
+        return SQLITE_MISUSE;
     }
+    
+    /* Validate that the target entity exists */
+    if (bNodeTarget) {
+        rc = cypherValidateNodeExists(pCtx, pOp->iNodeId);
+    } else {
+        rc = cypherValidateRelationshipExists(pCtx, pOp->iRelId);
+    }
+    if (rc != SQLITE_OK) return rc;
     
     /* Create write operation record */
     pWriteOp = cypherWriteOpCreate(CYPHER_WRITE_SET_PROPERTY);
     if (!pWriteOp) return SQLITE_NOMEM;
     
     pWriteOp->iNodeId = pOp->iNodeId;
+    pWriteOp->iRelId = pOp->iRelId;
     pWriteOp->zProperty = sqlite3_mprintf("%s", pOp->zProperty);
     
     /* Get old value for rollback support */
@@ -2010,9 +2480,16 @@ int cypherSetProperty(CypherWriteContext *pCtx, SetPropertyOp *pOp) {
     
     /* Query current property value */
     sqlite3_stmt *pStmt = NULL;
-    char *zSql = sqlite3_mprintf(
-        "SELECT json_extract(properties, '$.%s') FROM graph_nodes WHERE node_id = %lld",
-        pOp->zProperty, pOp->iNodeId);
+    char *zSql = NULL;
+    if (bNodeTarget) {
+        zSql = sqlite3_mprintf(
+            "SELECT json_extract(properties, '$.%s') FROM graph_nodes WHERE node_id = %lld",
+            pOp->zProperty, pOp->iNodeId);
+    } else {
+        zSql = sqlite3_mprintf(
+            "SELECT json_extract(properties, '$.%s') FROM graph_edges WHERE edge_id = %lld",
+            pOp->zProperty, pOp->iRelId);
+    }
     
     if (!zSql) {
         cypherWriteOpDestroy(pWriteOp);
@@ -2065,8 +2542,10 @@ int cypherSetProperty(CypherWriteContext *pCtx, SetPropertyOp *pOp) {
     }
     
     /* Actually update property in graph storage */
-    rc = cypherStorageUpdateProperties(pCtx->pGraph, pOp->iNodeId, 0, /* No relation ID for node properties */
-                                      pOp->zProperty, pOp->pValue);
+    rc = cypherStorageUpdateProperties(pCtx->pGraph,
+                                       bNodeTarget ? pOp->iNodeId : 0,
+                                       bNodeTarget ? 0 : pOp->iRelId,
+                                       pOp->zProperty, pOp->pValue);
     if (rc != SQLITE_OK) {
         return rc;
     }
@@ -2364,19 +2843,12 @@ int cypherDelete(CypherWriteContext *pCtx, DeleteOp *pOp) {
         pWriteOp->iNodeId = pOp->iNodeId;
         
         /* Store old node data for rollback */
-        sqlite3_stmt *pStmt = NULL;
-        char *zSql = sqlite3_mprintf(
-            "SELECT labels, properties FROM graph_nodes WHERE node_id = %lld",
-            pOp->iNodeId);
-        
-        if (!zSql) {
+        sqlite3_stmt *pStmt = cypherStmtCacheAcquireNodePayload(pCtx);
+        if (!pStmt) {
             cypherWriteOpDestroy(pWriteOp);
-            return SQLITE_NOMEM;
+            return SQLITE_ERROR;
         }
-        
-        rc = sqlite3_prepare_v2(pCtx->pGraph->pDb, zSql, -1, &pStmt, NULL);
-        sqlite3_free(zSql);
-        
+        rc = sqlite3_bind_int64(pStmt, 1, pOp->iNodeId);
         if (rc == SQLITE_OK) {
             rc = sqlite3_step(pStmt);
             if (rc == SQLITE_ROW) {
@@ -2396,8 +2868,9 @@ int cypherDelete(CypherWriteContext *pCtx, DeleteOp *pOp) {
                     }
                 }
             }
-            sqlite3_finalize(pStmt);
         }
+        sqlite3_reset(pStmt);
+        sqlite3_clear_bindings(pStmt);
         
     } else {
         /* Deleting a relationship */

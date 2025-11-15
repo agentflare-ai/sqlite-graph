@@ -47,8 +47,11 @@ void logicalPlanNodeDestroy(LogicalPlanNode *pNode) {
   sqlite3_free(pNode->zLabel);
   sqlite3_free(pNode->zProperty);
   sqlite3_free(pNode->zValue);
-  /* Don't free pExtra - it points to AST owned by parser */
-  /* sqlite3_free(pNode->pExtra); */
+  if( pNode->type == LOGICAL_MERGE && pNode->pExtra ) {
+    mergeClauseDetailsDestroy((MergeClauseDetails*)pNode->pExtra);
+    pNode->pExtra = NULL;
+  }
+  /* Remaining pExtra pointers reference parser-owned AST nodes. */
   sqlite3_free(pNode);
 }
 

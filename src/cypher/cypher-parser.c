@@ -48,6 +48,8 @@ static CypherAst *parseCreateClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseMergeClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseSetClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseDeleteClause(CypherLexer *pLexer, CypherParser *pParser);
+static CypherAst *parseMergeSetList(CypherLexer *pLexer, CypherParser *pParser);
+static CypherAst *parseMergePropertyTarget(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parsePatternList(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseNodePattern(CypherLexer *pLexer, CypherParser *pParser);
@@ -115,6 +117,7 @@ CypherParser *cypherParserCreate(void) {
     
     pParser->pAst = NULL;
     pParser->zErrorMsg = NULL;
+    pParser->bInMergeClause = 0;
     return pParser;
 }
 
@@ -352,18 +355,224 @@ static CypherAst *parseCreateClause(CypherLexer *pLexer, CypherParser *pParser) 
     return pCreateClause;
 }
 
+static CypherAst *parseMergePropertyTarget(CypherLexer *pLexer, CypherParser *pParser) {
+    CypherToken *pIdentifier;
+    CypherAst *pExpr;
+    int nProps = 0;
+
+    pIdentifier = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+    if (!pIdentifier) {
+        parserSetError(pParser, pLexer, "MERGE ON clauses must assign to a property like n.prop");
+        return NULL;
+    }
+
+    pExpr = cypherAstCreateIdentifier(pIdentifier->text, pIdentifier->line, pIdentifier->column);
+    if (!pExpr) {
+        parserSetError(pParser, pLexer, "Out of memory");
+        return NULL;
+    }
+
+    while (1) {
+        CypherToken *pDot = parserPeekToken(pLexer);
+        if (!pDot || pDot->type != CYPHER_TOK_DOT) {
+            break;
+        }
+        CypherToken *pProperty;
+        CypherAst *pPropExpr;
+        parserConsumeToken(pLexer, CYPHER_TOK_DOT);
+        pProperty = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+        if (!pProperty) {
+            cypherAstDestroy(pExpr);
+            parserSetError(pParser, pLexer, "Expected property name after '.'");
+            return NULL;
+        }
+        pPropExpr = cypherAstCreate(CYPHER_AST_PROPERTY, 0, 0);
+        if (!pPropExpr) {
+            cypherAstDestroy(pExpr);
+            parserSetError(pParser, pLexer, "Out of memory");
+            return NULL;
+        }
+        cypherAstAddChild(pPropExpr, pExpr);
+        cypherAstAddChild(pPropExpr,
+                          cypherAstCreateIdentifier(pProperty->text, pProperty->line, pProperty->column));
+        pExpr = pPropExpr;
+        nProps++;
+    }
+
+    if (nProps == 0) {
+        cypherAstDestroy(pExpr);
+        parserSetError(pParser, pLexer, "MERGE ON clauses must assign to a property like n.prop");
+        return NULL;
+    }
+
+    return pExpr;
+}
+
+static CypherAst *parseMergeSetList(CypherLexer *pLexer, CypherParser *pParser) {
+    CypherAst *pSetList = cypherAstCreate(CYPHER_AST_SET, 0, 0);
+    if (!pSetList) {
+        return NULL;
+    }
+
+    do {
+        CypherAst *pLeft = parseMergePropertyTarget(pLexer, pParser);
+        if (!pLeft) {
+            cypherAstDestroy(pSetList);
+            return NULL;
+        }
+
+        if (!parserConsumeToken(pLexer, CYPHER_TOK_EQ)) {
+            parserSetError(pParser, pLexer, "Expected '=' in MERGE ON SET assignment");
+            cypherAstDestroy(pLeft);
+            cypherAstDestroy(pSetList);
+            return NULL;
+        }
+
+        CypherAst *pRight = parseExpression(pLexer, pParser);
+        if (!pRight) {
+            cypherAstDestroy(pLeft);
+            cypherAstDestroy(pSetList);
+            return NULL;
+        }
+
+        if (pLexer->pLastToken && pLexer->pLastToken->type == CYPHER_TOK_DOLLAR) {
+            parserSetError(pParser, pLexer, "Parameters are not allowed inside MERGE ON SET clauses");
+            cypherAstDestroy(pLeft);
+            cypherAstDestroy(pRight);
+            cypherAstDestroy(pSetList);
+            return NULL;
+        }
+
+        CypherAst *pAssign = cypherAstCreateBinaryOp("=", pLeft, pRight, 0, 0);
+        if (!pAssign) {
+            cypherAstDestroy(pLeft);
+            cypherAstDestroy(pRight);
+            cypherAstDestroy(pSetList);
+            return NULL;
+        }
+        cypherAstAddChild(pSetList, pAssign);
+
+        CypherToken *pNext = parserPeekToken(pLexer);
+        if (!pNext || pNext->type != CYPHER_TOK_COMMA) {
+            break;
+        }
+        parserConsumeToken(pLexer, CYPHER_TOK_COMMA);
+    } while (1);
+
+    return pSetList;
+}
+
 static CypherAst *parseMergeClause(CypherLexer *pLexer, CypherParser *pParser) {
     if (!parserConsumeToken(pLexer, CYPHER_TOK_MERGE)) {
         parserSetError(pParser, pLexer, "Expected MERGE");
         return NULL;
     }
     CypherAst *pMergeClause = cypherAstCreate(CYPHER_AST_MERGE, 0, 0);
+    int wasInMerge = pParser ? pParser->bInMergeClause : 0;
+    if (pParser) {
+        pParser->bInMergeClause = 1;
+    }
     CypherAst *pPatternList = parsePatternList(pLexer, pParser);
+    if (pParser) {
+        pParser->bInMergeClause = wasInMerge;
+    }
     if (!pPatternList) {
         cypherAstDestroy(pMergeClause);
         return NULL;
     }
     cypherAstAddChild(pMergeClause, pPatternList);
+
+    CypherToken *pNext = parserPeekToken(pLexer);
+    if (pNext && pNext->type == CYPHER_TOK_WHERE) {
+        parserSetError(pParser, pLexer, "MERGE cannot be followed by WHERE; move the predicate to a MATCH (clauses.merge requirement)");
+        cypherAstDestroy(pMergeClause);
+        return NULL;
+    }
+
+    int seenOnCreate = 0;
+    int seenOnMatch = 0;
+
+    while (1) {
+        pNext = parserPeekToken(pLexer);
+        if (!pNext || pNext->type != CYPHER_TOK_ON) {
+            break;
+        }
+        parserConsumeToken(pLexer, CYPHER_TOK_ON);
+
+        CypherToken *pKind = parserPeekToken(pLexer);
+        if (!pKind) {
+            parserSetError(pParser, pLexer, "Expected CREATE or MATCH after ON");
+            cypherAstDestroy(pMergeClause);
+            return NULL;
+        }
+
+        if (pKind->type == CYPHER_TOK_CREATE) {
+            if (seenOnCreate) {
+                parserSetError(pParser, pLexer, "MERGE allows at most one ON CREATE clause");
+                cypherAstDestroy(pMergeClause);
+                return NULL;
+            }
+            parserConsumeToken(pLexer, CYPHER_TOK_CREATE);
+            if (!parserConsumeToken(pLexer, CYPHER_TOK_SET)) {
+                parserSetError(pParser, pLexer, "Expected SET after ON CREATE");
+                cypherAstDestroy(pMergeClause);
+                return NULL;
+            }
+
+            CypherAst *pSetList = parseMergeSetList(pLexer, pParser);
+            if (!pSetList) {
+                cypherAstDestroy(pMergeClause);
+                return NULL;
+            }
+
+            CypherAst *pOnCreate = cypherAstCreate(CYPHER_AST_ON_CREATE, 0, 0);
+            if (!pOnCreate) {
+                cypherAstDestroy(pSetList);
+                cypherAstDestroy(pMergeClause);
+                return NULL;
+            }
+            cypherAstAddChild(pOnCreate, pSetList);
+            cypherAstAddChild(pMergeClause, pOnCreate);
+            seenOnCreate = 1;
+            continue;
+        }
+
+        if (pKind->type == CYPHER_TOK_MATCH) {
+            if (seenOnMatch) {
+                parserSetError(pParser, pLexer, "MERGE allows at most one ON MATCH clause");
+                cypherAstDestroy(pMergeClause);
+                return NULL;
+            }
+            parserConsumeToken(pLexer, CYPHER_TOK_MATCH);
+            if (!parserConsumeToken(pLexer, CYPHER_TOK_SET)) {
+                parserSetError(pParser, pLexer, "Expected SET after ON MATCH");
+                cypherAstDestroy(pMergeClause);
+                return NULL;
+            }
+
+            CypherAst *pSetList = parseMergeSetList(pLexer, pParser);
+            if (!pSetList) {
+                cypherAstDestroy(pMergeClause);
+                return NULL;
+            }
+
+            CypherAst *pOnMatch = cypherAstCreate(CYPHER_AST_ON_MATCH, 0, 0);
+            if (!pOnMatch) {
+                cypherAstDestroy(pSetList);
+                cypherAstDestroy(pMergeClause);
+                return NULL;
+            }
+            cypherAstAddChild(pOnMatch, pSetList);
+            cypherAstAddChild(pMergeClause, pOnMatch);
+            seenOnMatch = 1;
+            continue;
+        }
+
+        parserSetError(pParser, pLexer, "Expected CREATE or MATCH after ON");
+        cypherAstDestroy(pMergeClause);
+        return NULL;
+    }
+
     return pMergeClause;
 }
 
@@ -504,6 +713,12 @@ static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser) {
 
         /* Check for right arrow */
         pNext = parserPeekToken(pLexer);
+        if (pNext && pNext->type == CYPHER_TOK_MULT && pParser && pParser->bInMergeClause) {
+            parserSetError(pParser, pLexer, "MERGE does not support variable-length relationships");
+            cypherAstDestroy(pRelPattern);
+            cypherAstDestroy(pPattern);
+            return NULL;
+        }
         if (pNext && pNext->type == CYPHER_TOK_ARROW_RIGHT) {
             parserConsumeToken(pLexer, CYPHER_TOK_ARROW_RIGHT);
             if (iDirection == -1) {

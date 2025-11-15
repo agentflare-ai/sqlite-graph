@@ -17,6 +17,329 @@ static double calculateJoinCost(LogicalPlanNode *pLeft, LogicalPlanNode *pRight,
 static int optimizeIndexUsage(LogicalPlanNode *pNode, PlanContext *pContext);
 static LogicalPlanNode *compileExpression(CypherAst *pAst, PlanContext *pContext);
 
+#define LOGICAL_MERGE_HAS_ON_CREATE 0x01
+#define LOGICAL_MERGE_HAS_ON_MATCH  0x02
+
+/* MERGE metadata helpers */
+static MergeClauseDetails *mergeClauseDetailsCreate(void);
+static int mergePlannerOOM(PlanContext *pContext);
+static void mergePatternNodeCleanup(MergePatternNode *pNode);
+static int mergeNodeAddLabel(MergePatternNode *pNode, const char *zLabel);
+static int mergePopulateNodePattern(CypherAst *pNodeAst, MergePatternNode *pNode,
+                                    PlanContext *pContext);
+static int mergeExtractMatchPropsFromNode(CypherAst *pNodeAst, MergeClauseDetails *pDetails,
+                                          PlanContext *pContext);
+static int mergeDetailsAddMatchProp(MergeClauseDetails *pDetails, const char *zKey,
+                                    CypherAst *pValue);
+static int mergeCaptureRelationshipDetails(CypherAst *pPattern, MergeClauseDetails *pDetails,
+                                           PlanContext *pContext);
+static int mergeDetailsAddSetOp(MergeSetOp **ppaOps, int *pnOps, const char *zVar,
+                                const char *zProperty, CypherAst *pValue);
+static int mergeProcessOnClause(MergeClauseDetails *pDetails, CypherAst *pClause,
+                                PlanContext *pContext, int bCreateClause);
+
+static MergeClauseDetails *mergeClauseDetailsCreate(void) {
+  MergeClauseDetails *pDetails = sqlite3_malloc(sizeof(MergeClauseDetails));
+  if( !pDetails ) return NULL;
+  memset(pDetails, 0, sizeof(MergeClauseDetails));
+  return pDetails;
+}
+
+void mergeClauseDetailsDestroy(MergeClauseDetails *pDetails) {
+  int i;
+
+  if( !pDetails ) return;
+
+  mergePatternNodeCleanup(&pDetails->targetNode);
+  mergePatternNodeCleanup(&pDetails->relatedNode);
+
+  sqlite3_free(pDetails->relationship.zAlias);
+  sqlite3_free(pDetails->relationship.zType);
+
+  for( i = 0; i < pDetails->nMatchProps; i++ ) {
+    sqlite3_free(pDetails->aMatchProps[i].zProperty);
+  }
+  sqlite3_free(pDetails->aMatchProps);
+
+  for( i = 0; i < pDetails->nOnCreateOps; i++ ) {
+    sqlite3_free(pDetails->aOnCreateOps[i].zTargetVar);
+    sqlite3_free(pDetails->aOnCreateOps[i].zProperty);
+  }
+  sqlite3_free(pDetails->aOnCreateOps);
+
+  for( i = 0; i < pDetails->nOnMatchOps; i++ ) {
+    sqlite3_free(pDetails->aOnMatchOps[i].zTargetVar);
+    sqlite3_free(pDetails->aOnMatchOps[i].zProperty);
+  }
+  sqlite3_free(pDetails->aOnMatchOps);
+
+  sqlite3_free(pDetails);
+}
+
+static int mergePlannerOOM(PlanContext *pContext) {
+  if( pContext ) {
+    if( !pContext->zErrorMsg ) {
+      pContext->zErrorMsg = sqlite3_mprintf(
+        "Out of memory while preparing MERGE clause metadata");
+    }
+    pContext->nErrors++;
+  }
+  return SQLITE_NOMEM;
+}
+
+static void mergePatternNodeCleanup(MergePatternNode *pNode) {
+  int i;
+
+  if( !pNode ) return;
+  sqlite3_free(pNode->zAlias);
+  for( i = 0; i < pNode->nLabels; i++ ) {
+    sqlite3_free(pNode->azLabels[i]);
+  }
+  sqlite3_free(pNode->azLabels);
+  memset(pNode, 0, sizeof(*pNode));
+}
+
+static int mergeNodeAddLabel(MergePatternNode *pNode, const char *zLabel) {
+  char **azNew;
+
+  if( !zLabel ) return SQLITE_OK;
+
+  azNew = sqlite3_realloc(pNode->azLabels, (pNode->nLabels + 1) * sizeof(char*));
+  if( !azNew ) return SQLITE_NOMEM;
+
+  pNode->azLabels = azNew;
+  pNode->azLabels[pNode->nLabels] = sqlite3_mprintf("%s", zLabel);
+  if( !pNode->azLabels[pNode->nLabels] ) {
+    return SQLITE_NOMEM;
+  }
+
+  pNode->nLabels++;
+  return SQLITE_OK;
+}
+
+static int mergePopulateNodePattern(CypherAst *pNodeAst, MergePatternNode *pNode,
+                                    PlanContext *pContext) {
+  int i;
+
+  if( !pNodeAst || !cypherAstIsType(pNodeAst, CYPHER_AST_NODE_PATTERN) ) {
+    return SQLITE_OK;
+  }
+
+  for( i = 0; i < pNodeAst->nChildren; i++ ) {
+    CypherAst *pChild = pNodeAst->apChildren[i];
+
+    if( cypherAstIsType(pChild, CYPHER_AST_IDENTIFIER) && !pNode->zAlias ) {
+      const char *zAlias = cypherAstGetValue(pChild);
+      if( zAlias ) {
+        pNode->zAlias = sqlite3_mprintf("%s", zAlias);
+        if( !pNode->zAlias ) return mergePlannerOOM(pContext);
+      }
+    } else if( cypherAstIsType(pChild, CYPHER_AST_LABELS) ) {
+      int j;
+      if( pChild->nChildren > 0 ) {
+        for( j = 0; j < pChild->nChildren; j++ ) {
+          const char *zLabel = cypherAstGetValue(pChild->apChildren[j]);
+          if( zLabel ) {
+            if( mergeNodeAddLabel(pNode, zLabel)!=SQLITE_OK ) {
+              return mergePlannerOOM(pContext);
+            }
+          }
+        }
+      } else if( pChild->zValue ) {
+        if( mergeNodeAddLabel(pNode, pChild->zValue)!=SQLITE_OK ) {
+          return mergePlannerOOM(pContext);
+        }
+      }
+    } else if( cypherAstIsType(pChild, CYPHER_AST_MAP) ) {
+      pNode->pProperties = pChild;
+    }
+  }
+
+  return SQLITE_OK;
+}
+
+static int mergeDetailsAddMatchProp(MergeClauseDetails *pDetails, const char *zKey,
+                                    CypherAst *pValue) {
+  MergePropertyEntry *aNew;
+
+  if( !pDetails || !zKey ) return SQLITE_OK;
+
+  aNew = sqlite3_realloc(pDetails->aMatchProps,
+                         (pDetails->nMatchProps + 1) * sizeof(MergePropertyEntry));
+  if( !aNew ) return SQLITE_NOMEM;
+
+  pDetails->aMatchProps = aNew;
+  memset(&pDetails->aMatchProps[pDetails->nMatchProps], 0, sizeof(MergePropertyEntry));
+  pDetails->aMatchProps[pDetails->nMatchProps].zProperty = sqlite3_mprintf("%s", zKey);
+  if( !pDetails->aMatchProps[pDetails->nMatchProps].zProperty ) {
+    return SQLITE_NOMEM;
+  }
+  pDetails->aMatchProps[pDetails->nMatchProps].pValueExpr = pValue;
+  pDetails->nMatchProps++;
+
+  return SQLITE_OK;
+}
+
+static int mergeExtractMatchPropsFromNode(CypherAst *pNodeAst, MergeClauseDetails *pDetails,
+                                          PlanContext *pContext) {
+  int i;
+
+  if( !pNodeAst ) return SQLITE_OK;
+
+  for( i = 0; i < pNodeAst->nChildren; i++ ) {
+    CypherAst *pChild = pNodeAst->apChildren[i];
+    if( !cypherAstIsType(pChild, CYPHER_AST_MAP) ) continue;
+
+    fprintf(stderr, "DEBUG mergeExtractMatchPropsFromNode saw property map with %d entries\n", pChild->nChildren);
+
+    int j;
+    for( j = 0; j < pChild->nChildren; j++ ) {
+      CypherAst *pPair = pChild->apChildren[j];
+      const char *zKey;
+      CypherAst *pValue = NULL;
+      int rc;
+
+      if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+      zKey = cypherAstGetValue(pPair);
+      if( pPair->nChildren > 0 ) {
+        pValue = pPair->apChildren[0];
+      }
+
+      /* Validate: NULL values are not allowed in MERGE patterns */
+      if( pValue && cypherAstIsType(pValue, CYPHER_AST_LITERAL) ) {
+        const char *zLiteral = cypherAstGetValue(pValue);
+        if( zLiteral && sqlite3_stricmp(zLiteral, "null") == 0 ) {
+          pContext->zErrorMsg = sqlite3_mprintf("Cannot use NULL in MERGE pattern properties");
+          return SQLITE_ERROR;
+        }
+      }
+
+      rc = mergeDetailsAddMatchProp(pDetails, zKey, pValue);
+      if( rc!=SQLITE_OK ) return mergePlannerOOM(pContext);
+      fprintf(stderr, "DEBUG added match prop %s count now %d\n", zKey ? zKey : "(null)", pDetails->nMatchProps);
+    }
+  }
+
+  return SQLITE_OK;
+}
+
+static int mergeDetailsAddSetOp(MergeSetOp **ppaOps, int *pnOps, const char *zVar,
+                                const char *zProperty, CypherAst *pValue) {
+  MergeSetOp *aNew;
+
+  if( !ppaOps || !pnOps ) return SQLITE_OK;
+  if( !zProperty ) return SQLITE_OK;
+
+  aNew = sqlite3_realloc(*ppaOps, (*pnOps + 1) * sizeof(MergeSetOp));
+  if( !aNew ) return SQLITE_NOMEM;
+  *ppaOps = aNew;
+
+  memset(&(*ppaOps)[*pnOps], 0, sizeof(MergeSetOp));
+  if( zVar ) {
+    (*ppaOps)[*pnOps].zTargetVar = sqlite3_mprintf("%s", zVar);
+    if( !(*ppaOps)[*pnOps].zTargetVar ) return SQLITE_NOMEM;
+  }
+  (*ppaOps)[*pnOps].zProperty = sqlite3_mprintf("%s", zProperty);
+  if( !(*ppaOps)[*pnOps].zProperty ) {
+    sqlite3_free((*ppaOps)[*pnOps].zTargetVar);
+    (*ppaOps)[*pnOps].zTargetVar = NULL;
+    return SQLITE_NOMEM;
+  }
+  (*ppaOps)[*pnOps].pValueExpr = pValue;
+  (*pnOps)++;
+  return SQLITE_OK;
+}
+
+static int mergeProcessOnClause(MergeClauseDetails *pDetails, CypherAst *pClause,
+                                PlanContext *pContext, int bCreateClause) {
+  CypherAst *pSetList;
+  int i;
+
+  if( !pClause || pClause->nChildren == 0 ) return SQLITE_OK;
+  pSetList = pClause->apChildren[0];
+  if( !pSetList ) return SQLITE_OK;
+
+  for( i = 0; i < pSetList->nChildren; i++ ) {
+    CypherAst *pAssign = pSetList->apChildren[i];
+    CypherAst *pLeft;
+    CypherAst *pRight;
+    const char *zVar = NULL;
+    const char *zProp = NULL;
+    int rc;
+
+    if( !pAssign || pAssign->nChildren < 2 ) continue;
+    pLeft = pAssign->apChildren[0];
+    pRight = pAssign->apChildren[1];
+    if( !cypherAstIsType(pLeft, CYPHER_AST_PROPERTY) ) continue;
+
+    if( pLeft->nChildren > 0 && cypherAstIsType(pLeft->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+      zVar = cypherAstGetValue(pLeft->apChildren[0]);
+    }
+    if( pLeft->nChildren > 1 && cypherAstIsType(pLeft->apChildren[1], CYPHER_AST_IDENTIFIER) ) {
+      zProp = cypherAstGetValue(pLeft->apChildren[1]);
+    }
+    if( !zProp ) continue;
+
+    if( bCreateClause ) {
+      rc = mergeDetailsAddSetOp(&pDetails->aOnCreateOps, &pDetails->nOnCreateOps,
+                                zVar, zProp, pRight);
+    } else {
+      rc = mergeDetailsAddSetOp(&pDetails->aOnMatchOps, &pDetails->nOnMatchOps,
+                                zVar, zProp, pRight);
+    }
+
+    if( rc!=SQLITE_OK ) return mergePlannerOOM(pContext);
+  }
+
+  return SQLITE_OK;
+}
+
+static int mergeCaptureRelationshipDetails(CypherAst *pPattern, MergeClauseDetails *pDetails,
+                                           PlanContext *pContext) {
+  int i;
+
+  if( !pPattern ) return SQLITE_OK;
+
+  for( i = 0; i < pPattern->nChildren; i++ ) {
+    CypherAst *pChild = pPattern->apChildren[i];
+    if( !cypherAstIsType(pChild, CYPHER_AST_REL_PATTERN) ) continue;
+    if( i + 1 >= pPattern->nChildren ) continue;
+    if( !cypherAstIsType(pPattern->apChildren[i + 1], CYPHER_AST_NODE_PATTERN) ) continue;
+
+    pDetails->bHasRelationship = 1;
+    pDetails->relationship.iDirection = pChild->iFlags;
+
+    for( int j = 0; j < pChild->nChildren; j++ ) {
+      CypherAst *pRelChild = pChild->apChildren[j];
+      if( cypherAstIsType(pRelChild, CYPHER_AST_IDENTIFIER) && !pDetails->relationship.zAlias ) {
+        const char *zAlias = cypherAstGetValue(pRelChild);
+        if( zAlias ) {
+          pDetails->relationship.zAlias = sqlite3_mprintf("%s", zAlias);
+          if( !pDetails->relationship.zAlias ) return mergePlannerOOM(pContext);
+        }
+      } else if( cypherAstIsType(pRelChild, CYPHER_AST_LABELS) ) {
+        const char *zType = NULL;
+        if( pRelChild->nChildren > 0 ) {
+          zType = cypherAstGetValue(pRelChild->apChildren[0]);
+        } else {
+          zType = cypherAstGetValue(pRelChild);
+        }
+        if( zType ) {
+          pDetails->relationship.zType = sqlite3_mprintf("%s", zType);
+          if( !pDetails->relationship.zType ) return mergePlannerOOM(pContext);
+        }
+      } else if( cypherAstIsType(pRelChild, CYPHER_AST_MAP) ) {
+        pDetails->relationship.pProperties = pRelChild;
+      }
+    }
+
+    return mergePopulateNodePattern(pPattern->apChildren[i + 1],
+                                    &pDetails->relatedNode, pContext);
+  }
+
+  return SQLITE_OK;
+}
+
 CypherPlanner *cypherPlannerCreate(sqlite3 *pDb, GraphVtab *pGraph) {
   CypherPlanner *pPlanner;
   
@@ -571,6 +894,8 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
               const char *zAlias = cypherAstGetValue(pNode->apChildren[0]);
               if( zAlias ) {
                 logicalPlanNodeSetAlias(pLogical, zAlias);
+                /* Register variable in symbol table */
+                planContextAddVariable(pContext, zAlias, pLogical);
               }
             }
 
@@ -647,17 +972,81 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       }
       break;
 
-    case CYPHER_AST_MERGE:
-      /* MERGE clause becomes a merge operation */
+    case CYPHER_AST_MERGE: {
+      MergeClauseDetails *pDetails = NULL;
+      int rcMerge = SQLITE_OK;
+
       pLogical = logicalPlanNodeCreate(LOGICAL_MERGE);
-      if( pLogical && pAst->nChildren > 0 ) {
-        /* Process pattern to merge */
-        pChild = compileAstNode(pAst->apChildren[0], pContext);
-        if( pChild ) {
-          logicalPlanNodeAddChild(pLogical, pChild);
+      if( !pLogical ) break;
+
+      pDetails = mergeClauseDetailsCreate();
+      if( !pDetails ) {
+        mergePlannerOOM(pContext);
+        logicalPlanNodeDestroy(pLogical);
+        pLogical = NULL;
+        break;
+      }
+      pLogical->pExtra = pDetails;
+
+      if( pAst->nChildren > 0 && cypherAstIsType(pAst->apChildren[0], CYPHER_AST_PATTERN) ) {
+        CypherAst *pPattern = pAst->apChildren[0];
+        pDetails->pPatternAst = pPattern;
+
+        if( pPattern->nChildren > 0 &&
+            cypherAstIsType(pPattern->apChildren[0], CYPHER_AST_NODE_PATTERN) ) {
+          rcMerge = mergePopulateNodePattern(pPattern->apChildren[0],
+                                             &pDetails->targetNode, pContext);
+          if( rcMerge == SQLITE_OK ) {
+            rcMerge = mergeExtractMatchPropsFromNode(pPattern->apChildren[0],
+                                                     pDetails, pContext);
+          }
+          if( rcMerge!=SQLITE_OK ) goto merge_fail;
+
+          /* Validate: Variable must not already be bound */
+          if( pDetails->targetNode.zAlias ) {
+            int j;
+            for( j = 0; j < pContext->nVariables; j++ ) {
+              if( pContext->azVariables[j] &&
+                  strcmp(pContext->azVariables[j], pDetails->targetNode.zAlias) == 0 ) {
+                pContext->zErrorMsg = sqlite3_mprintf(
+                  "Variable `%s` already declared", pDetails->targetNode.zAlias);
+                rcMerge = SQLITE_ERROR;
+                goto merge_fail;
+              }
+            }
+            logicalPlanNodeSetAlias(pLogical, pDetails->targetNode.zAlias);
+          }
+          if( pDetails->targetNode.nLabels > 0 ) {
+            logicalPlanNodeSetLabel(pLogical, pDetails->targetNode.azLabels[0]);
+          }
+        }
+
+        rcMerge = mergeCaptureRelationshipDetails(pPattern, pDetails, pContext);
+        if( rcMerge!=SQLITE_OK ) goto merge_fail;
+      }
+
+      for( i = 1; i < pAst->nChildren; i++ ) {
+        CypherAst *pClause = pAst->apChildren[i];
+        if( cypherAstIsType(pClause, CYPHER_AST_ON_CREATE) ) {
+          rcMerge = mergeProcessOnClause(pDetails, pClause, pContext, 1);
+          if( rcMerge!=SQLITE_OK ) goto merge_fail;
+          pLogical->iFlags |= LOGICAL_MERGE_HAS_ON_CREATE;
+        } else if( cypherAstIsType(pClause, CYPHER_AST_ON_MATCH) ) {
+          rcMerge = mergeProcessOnClause(pDetails, pClause, pContext, 0);
+          if( rcMerge!=SQLITE_OK ) goto merge_fail;
+          pLogical->iFlags |= LOGICAL_MERGE_HAS_ON_MATCH;
         }
       }
+
       break;
+
+    merge_fail:
+      mergeClauseDetailsDestroy(pDetails);
+      pLogical->pExtra = NULL;
+      logicalPlanNodeDestroy(pLogical);
+      pLogical = NULL;
+      break;
+    }
 
     case CYPHER_AST_SET:
       /* SET clause becomes a set operation */

@@ -139,6 +139,9 @@ typedef struct PhysicalPlanNode {
   char *zAlias;                 /* Variable name/alias */
 
   /* Operator-specific parameters */
+  char *zMatchJson;             /* Serialized match criteria (MERGE) */
+  char *zOnCreateJson;          /* Serialized ON CREATE actions */
+  char *zOnMatchJson;           /* Serialized ON MATCH actions */
   char *zIndexName;             /* Index to use (if any) */
   char *zLabel;                 /* Label for scans */
   char *zProperty;              /* Property for filters/indexes */
@@ -172,6 +175,51 @@ typedef struct PhysicalPlanNode {
   void *pExecState;             /* Operator execution state */
   int iFlags;                   /* Execution flags */
 } PhysicalPlanNode;
+
+/*
+** MERGE clause metadata tracked on logical plan nodes.
+*/
+typedef struct MergePatternNode {
+  char *zAlias;                 /* Variable name */
+  char **azLabels;              /* Labels/types attached to pattern element */
+  int nLabels;                  /* Number of labels/types */
+  CypherAst *pProperties;       /* Property map AST for this pattern */
+} MergePatternNode;
+
+typedef struct MergePatternRelationship {
+  char *zAlias;                 /* Relationship variable */
+  char *zType;                  /* Relationship type */
+  int iDirection;               /* -1 <-, 0 --, 1 -> */
+  CypherAst *pProperties;       /* Relationship property map */
+} MergePatternRelationship;
+
+typedef struct MergePropertyEntry {
+  char *zProperty;              /* Property key */
+  CypherAst *pValueExpr;        /* Expression AST providing the value */
+} MergePropertyEntry;
+
+typedef struct MergeSetOp {
+  char *zTargetVar;             /* Variable referenced in SET */
+  char *zProperty;              /* Property being assigned */
+  CypherAst *pValueExpr;        /* RHS expression AST */
+} MergeSetOp;
+
+typedef struct MergeClauseDetails {
+  CypherAst *pPatternAst;               /* Original MERGE pattern */
+  MergePatternNode targetNode;          /* Primary node in MERGE */
+  MergePatternNode relatedNode;         /* Secondary node (when rel present) */
+  MergePatternRelationship relationship;/* Relationship metadata */
+  int bHasRelationship;                 /* Non-zero if relationship captured */
+
+  MergePropertyEntry *aMatchProps;      /* Match criteria from pattern */
+  int nMatchProps;
+
+  MergeSetOp *aOnCreateOps;             /* ON CREATE SET entries */
+  int nOnCreateOps;
+
+  MergeSetOp *aOnMatchOps;              /* ON MATCH SET entries */
+  int nOnMatchOps;
+} MergeClauseDetails;
 
 /*
 ** Query plan compilation context.
@@ -215,6 +263,11 @@ typedef struct CypherPlanner {
   PhysicalPlanNode *pPhysicalPlan; /* Optimized physical plan */
   char *zErrorMsg;              /* Error message */
 } CypherPlanner;
+
+/*
+** MERGE metadata helpers.
+*/
+void mergeClauseDetailsDestroy(MergeClauseDetails *pDetails);
 
 /*
 ** Planner creation and management functions.

@@ -97,8 +97,8 @@ int cypherStorageAddNode(GraphVtab *pGraph, sqlite3_int64 iNodeId,
     if( iNodeId > 0 ) {
         /* Specific node ID requested */
         zSql = sqlite3_mprintf(
-            "INSERT INTO graph_nodes (node_id, labels, properties) VALUES (%lld, '%s', %s)",
-            iNodeId, zLabelsJson, 
+            "INSERT INTO graph_nodes (id, labels, properties) VALUES (%lld, '%s', %s)",
+            iNodeId, zLabelsJson,
             zEscapedProps ? sqlite3_mprintf("'%s'", zEscapedProps) : "NULL"
         );
     } else {
@@ -167,7 +167,7 @@ int cypherStorageAddEdge(GraphVtab *pGraph, sqlite3_int64 iEdgeId,
     if( iEdgeId > 0 ) {
         /* Specific edge ID requested */
         zSql = sqlite3_mprintf(
-            "INSERT INTO graph_edges (edge_id, from_node, to_node, edge_type, weight, properties) "
+            "INSERT INTO graph_edges (id, source, target, edge_type, weight, properties) "
             "VALUES (%lld, %lld, %lld, %s, %.15g, %s)",
             iEdgeId, iFromId, iToId,
             zEscapedType ? sqlite3_mprintf("'%s'", zEscapedType) : "NULL",
@@ -177,7 +177,7 @@ int cypherStorageAddEdge(GraphVtab *pGraph, sqlite3_int64 iEdgeId,
     } else {
         /* Auto-generate edge ID */
         zSql = sqlite3_mprintf(
-            "INSERT INTO graph_edges (from_node, to_node, edge_type, weight, properties) "
+            "INSERT INTO graph_edges (source, target, edge_type, weight, properties) "
             "VALUES (%lld, %lld, %s, %.15g, %s)",
             iFromId, iToId,
             zEscapedType ? sqlite3_mprintf("'%s'", zEscapedType) : "NULL",
@@ -245,7 +245,7 @@ int cypherStorageUpdateProperties(GraphVtab *pGraph, sqlite3_int64 iNodeId,
         zSql = sqlite3_mprintf(
             "UPDATE graph_nodes SET properties = json_set("
             "COALESCE(properties, '{}'), '$.%s', json('%s')) "
-            "WHERE node_id = %lld",
+            "WHERE id = %lld",
             zEscapedProp, zEscapedValue, iNodeId
         );
     } else {
@@ -253,7 +253,7 @@ int cypherStorageUpdateProperties(GraphVtab *pGraph, sqlite3_int64 iNodeId,
         zSql = sqlite3_mprintf(
             "UPDATE graph_edges SET properties = json_set("
             "COALESCE(properties, '{}'), '$.%s', json('%s')) "
-            "WHERE edge_id = %lld",
+            "WHERE id = %lld",
             zEscapedProp, zEscapedValue, iEdgeId
         );
     }
@@ -303,7 +303,7 @@ int cypherStorageDeleteNode(GraphVtab *pGraph, sqlite3_int64 iNodeId, int bDetac
     }
     
     /* Delete the node */
-    zSql = sqlite3_mprintf("DELETE FROM graph_nodes WHERE node_id = %lld", iNodeId);
+    zSql = sqlite3_mprintf("DELETE FROM graph_nodes WHERE id = %lld", iNodeId);
     if( !zSql ) return SQLITE_NOMEM;
     
     rc = cypherStorageExecuteUpdate(pGraph, zSql, &rowId);
@@ -329,7 +329,7 @@ int cypherStorageDeleteEdge(GraphVtab *pGraph, sqlite3_int64 iEdgeId) {
     if( !pGraph || iEdgeId <= 0 ) return SQLITE_MISUSE;
     
     /* Delete the edge */
-    zSql = sqlite3_mprintf("DELETE FROM graph_edges WHERE edge_id = %lld", iEdgeId);
+    zSql = sqlite3_mprintf("DELETE FROM graph_edges WHERE id = %lld", iEdgeId);
     if( !zSql ) return SQLITE_NOMEM;
     
     rc = cypherStorageExecuteUpdate(pGraph, zSql, &rowId);
@@ -355,7 +355,7 @@ int cypherStorageNodeExists(GraphVtab *pGraph, sqlite3_int64 iNodeId) {
     
     if( !pGraph || iNodeId <= 0 ) return -1;
     
-    zSql = sqlite3_mprintf("SELECT 1 FROM graph_nodes WHERE node_id = %lld LIMIT 1", iNodeId);
+    zSql = sqlite3_mprintf("SELECT 1 FROM graph_nodes WHERE id = %lld LIMIT 1", iNodeId);
     if( !zSql ) return -1;
     
     rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, NULL);
@@ -388,7 +388,7 @@ sqlite3_int64 cypherStorageGetNextNodeId(GraphVtab *pGraph) {
     
     if( !pGraph ) return -1;
     
-    zSql = sqlite3_mprintf("SELECT COALESCE(MAX(node_id), 0) + 1 FROM graph_nodes");
+    zSql = sqlite3_mprintf("SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes");
     if( !zSql ) return -1;
     
     rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, NULL);
@@ -421,7 +421,7 @@ sqlite3_int64 cypherStorageGetNextEdgeId(GraphVtab *pGraph) {
     
     if( !pGraph ) return -1;
     
-    zSql = sqlite3_mprintf("SELECT COALESCE(MAX(edge_id), 0) + 1 FROM graph_edges");
+    zSql = sqlite3_mprintf("SELECT COALESCE(MAX(id), 0) + 1 FROM graph_edges");
     if( !zSql ) return -1;
     
     rc = sqlite3_prepare_v2(pGraph->pDb, zSql, -1, &pStmt, NULL);

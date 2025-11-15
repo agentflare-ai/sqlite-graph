@@ -122,9 +122,12 @@ typedef struct CypherExpression {
 /* Expression evaluation functions */
 int cypherExpressionCreate(CypherExpression **ppExpr, CypherExpressionType type);
 int cypherExpressionDestroy(CypherExpression *pExpr);
-int cypherExpressionEvaluate(const CypherExpression *pExpr, 
-                            ExecutionContext *pContext, 
+int cypherExpressionEvaluate(const CypherExpression *pExpr,
+                            ExecutionContext *pContext,
                             CypherValue *pResult);
+
+/* AST to expression evaluation (main entry point from parser) */
+int cypherEvaluateAstExpression(CypherAst *pAst, ExecutionContext *pContext, CypherValue **ppResult);
 
 /* Literal expression creation */
 int cypherExpressionCreateLiteral(CypherExpression **ppExpr, const CypherValue *pValue);
@@ -219,6 +222,9 @@ int cypherFunctionLast(CypherValue *apArgs, int nArgs, CypherValue *pResult);
 int cypherFunctionToString(CypherValue *apArgs, int nArgs, CypherValue *pResult);
 int cypherFunctionToInteger(CypherValue *apArgs, int nArgs, CypherValue *pResult);
 int cypherFunctionToFloat(CypherValue *apArgs, int nArgs, CypherValue *pResult);
+
+/* Null handling functions */
+int cypherFunctionCoalesce(CypherValue *apArgs, int nArgs, CypherValue *pResult);
 
 /* Aggregate functions */
 int cypherFunctionCount(CypherValue *apArgs, int nArgs, CypherValue *pResult);

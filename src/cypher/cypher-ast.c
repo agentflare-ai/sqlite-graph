@@ -155,6 +155,8 @@ const char *cypherAstNodeTypeName(CypherAstNodeType type) {
     case CYPHER_AST_ENDS_WITH:       return "ENDS_WITH";
     case CYPHER_AST_CONTAINS_OP:     return "CONTAINS_OP";
     case CYPHER_AST_REGEX:           return "REGEX";
+    case CYPHER_AST_ON_CREATE:       return "ON_CREATE";
+    case CYPHER_AST_ON_MATCH:        return "ON_MATCH";
     case CYPHER_AST_CREATE:          return "CREATE";
     case CYPHER_AST_MERGE:           return "MERGE";
     case CYPHER_AST_SET:             return "SET";

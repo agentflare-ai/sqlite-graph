@@ -9,6 +9,138 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <ctype.h>
+
+static int mergeValueLooksNumeric(const char *zValue) {
+  const char *z = zValue;
+  int seenDigit = 0;
+
+  if( !zValue || !*zValue ) return 0;
+  if( *z == '-' ) z++;
+  while( *z ) {
+    if( (*z >= '0' && *z <= '9') || *z == '.' ) {
+      seenDigit = 1;
+    } else {
+      return 0;
+    }
+    z++;
+  }
+  return seenDigit;
+}
+
+static char *mergeRenderExpressionJson(CypherAst *pExpr) {
+  const char *zValue;
+
+  if( !pExpr ) return sqlite3_mprintf("null");
+  zValue = cypherAstGetValue(pExpr);
+  if( !zValue ) {
+    const char *zType = cypherAstNodeTypeName(pExpr->type);
+    return sqlite3_mprintf("\"<%s>\"", zType ? zType : "expr");
+  }
+  if( zValue[0] == '\'' || zValue[0] == '"' ) {
+    int n = (int)strlen(zValue);
+    if( n >= 2 ) {
+      char *zLiteral = sqlite3_mprintf("%.*s", n - 2, zValue + 1);
+      char *zJson = zLiteral ? sqlite3_mprintf("\"%s\"", zLiteral) : NULL;
+      sqlite3_free(zLiteral);
+      return zJson;
+    }
+  }
+  if( mergeValueLooksNumeric(zValue) ||
+      strcmp(zValue, "true") == 0 ||
+      strcmp(zValue, "false") == 0 ||
+      strcmp(zValue, "null") == 0 ) {
+    return sqlite3_mprintf("%s", zValue);
+  }
+  return sqlite3_mprintf("\"%s\"", zValue);
+}
+
+static char *mergeSerializeMatchProps(MergeClauseDetails *pDetails) {
+  char *zJson;
+  int first = 1;
+  int i;
+
+  if( !pDetails || pDetails->nMatchProps == 0 ) {
+    return sqlite3_mprintf("{}");
+  }
+
+  zJson = sqlite3_mprintf("{");
+  if( !zJson ) return NULL;
+
+  for( i = 0; i < pDetails->nMatchProps; i++ ) {
+    MergePropertyEntry *pEntry = &pDetails->aMatchProps[i];
+    char *zValueJson = mergeRenderExpressionJson(pEntry->pValueExpr);
+    char *zNext;
+
+    if( !zValueJson ) {
+      sqlite3_free(zJson);
+      return NULL;
+    }
+
+    zNext = sqlite3_mprintf(
+      "%s%s\"%s\":%s",
+      zJson,
+      first ? "" : ",",
+      pEntry->zProperty ? pEntry->zProperty : "",
+      zValueJson
+    );
+    sqlite3_free(zJson);
+    sqlite3_free(zValueJson);
+    if( !zNext ) return NULL;
+    zJson = zNext;
+    first = 0;
+  }
+
+  {
+    char *zFinal = sqlite3_mprintf("%s}", zJson);
+    sqlite3_free(zJson);
+    return zFinal;
+  }
+}
+
+static char *mergeSerializeSetOps(MergeSetOp *aOps, int nOps) {
+  char *zJson;
+  int first = 1;
+  int i;
+
+  if( nOps == 0 || !aOps ) {
+    return sqlite3_mprintf("[]");
+  }
+
+  zJson = sqlite3_mprintf("[");
+  if( !zJson ) return NULL;
+
+  for( i = 0; i < nOps; i++ ) {
+    MergeSetOp *pOp = &aOps[i];
+    char *zValueJson = mergeRenderExpressionJson(pOp->pValueExpr);
+    char *zNext;
+
+    if( !zValueJson ) {
+      sqlite3_free(zJson);
+      return NULL;
+    }
+
+    zNext = sqlite3_mprintf(
+      "%s%s{\"target\":\"%s\",\"property\":\"%s\",\"value\":%s}",
+      zJson,
+      first ? "" : ",",
+      pOp->zTargetVar ? pOp->zTargetVar : "",
+      pOp->zProperty ? pOp->zProperty : "",
+      zValueJson
+    );
+    sqlite3_free(zJson);
+    sqlite3_free(zValueJson);
+    if( !zNext ) return NULL;
+    zJson = zNext;
+    first = 0;
+  }
+
+  {
+    char *zFinal = sqlite3_mprintf("%s]", zJson);
+    sqlite3_free(zJson);
+    return zFinal;
+  }
+}
 
 PhysicalPlanNode *physicalPlanNodeCreate(PhysicalOperatorType type) {
   PhysicalPlanNode *pNode;
@@ -46,8 +178,14 @@ void physicalPlanNodeDestroy(PhysicalPlanNode *pNode) {
   sqlite3_free(pNode->zLabel);
   sqlite3_free(pNode->zProperty);
   sqlite3_free(pNode->zValue);
-  /* Don't free pExecState - it points to AST owned by parser */
-  /* sqlite3_free(pNode->pExecState); */
+  sqlite3_free(pNode->zMatchJson);
+  sqlite3_free(pNode->zOnCreateJson);
+  sqlite3_free(pNode->zOnMatchJson);
+  if( pNode->type == PHYSICAL_MERGE && pNode->pExecState ) {
+    mergeClauseDetailsDestroy((MergeClauseDetails*)pNode->pExecState);
+    pNode->pExecState = NULL;
+  }
+  /* Remaining pExecState pointers reference parser-owned AST nodes. */
   sqlite3_free(pNode);
 }
 
@@ -230,9 +368,20 @@ PhysicalPlanNode *logicalPlanToPhysical(LogicalPlanNode *pLogical, PlanContext *
       pPhysical = physicalPlanNodeCreate(PHYSICAL_CREATE);
       break;
 
-    case LOGICAL_MERGE:
+    case LOGICAL_MERGE: {
+      MergeClauseDetails *pDetails = (MergeClauseDetails*)pLogical->pExtra;
       pPhysical = physicalPlanNodeCreate(PHYSICAL_MERGE);
+      if( pPhysical && pDetails ) {
+        pPhysical->zMatchJson = mergeSerializeMatchProps(pDetails);
+        pPhysical->zOnCreateJson = mergeSerializeSetOps(pDetails->aOnCreateOps,
+                                                        pDetails->nOnCreateOps);
+        pPhysical->zOnMatchJson = mergeSerializeSetOps(pDetails->aOnMatchOps,
+                                                       pDetails->nOnMatchOps);
+        pPhysical->pExecState = pDetails;
+        pLogical->pExtra = NULL;
+      }
       break;
+    }
 
     case LOGICAL_SET:
       pPhysical = physicalPlanNodeCreate(PHYSICAL_SET);
@@ -269,8 +418,10 @@ PhysicalPlanNode *logicalPlanToPhysical(LogicalPlanNode *pLogical, PlanContext *
   pPhysical->rCost = pLogical->rEstimatedCost;
   pPhysical->iRows = pLogical->iEstimatedRows;
 
-  /* Copy extra data (e.g., pattern AST for CREATE) */
-  pPhysical->pExecState = pLogical->pExtra;
+  /* Copy extra data (e.g., pattern AST for CREATE) - but only if not already set */
+  if( !pPhysical->pExecState ) {
+    pPhysical->pExecState = pLogical->pExtra;
+  }
   pPhysical->iFlags = pLogical->iFlags;
 
   /* Convert children recursively */

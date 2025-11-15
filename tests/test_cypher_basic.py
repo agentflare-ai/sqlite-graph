@@ -73,5 +73,45 @@ try:
 except Exception as e:
     print(f"❌ RETURN literal FAILED: {e}\n")
 
+# Test 6: WITH + MERGE + MATCH pipeline
+print("="*60)
+print("Test 6: WITH + MERGE + MATCH")
+try:
+    result = conn.execute(
+        "SELECT cypher_execute('WITH \"MergePipeline\" AS name "
+        "MERGE (p:Person {name:name}) "
+        "WITH p MATCH (p:Person {name:name}) RETURN p')"
+    ).fetchone()
+    print(f"✅ WITH/MERGE pipeline SUCCESS: {result}\n")
+except Exception as e:
+    print(f"❌ WITH/MERGE pipeline FAILED: {e}\n")
+
+# Test 7: UNWIND driving MERGE insertions
+print("="*60)
+print("Test 7: UNWIND with MERGE")
+try:
+    result = conn.execute(
+        "SELECT cypher_execute('UNWIND [\"A\",\"B\",\"C\"] AS name "
+        "MERGE (:Person {name:name}) RETURN count(*)')"
+    ).fetchone()
+    print(f"✅ UNWIND/MERGE SUCCESS: {result}\n")
+except Exception as e:
+    print(f"❌ UNWIND/MERGE FAILED: {e}\n")
+
+# Test 8: MERGE relationships alongside MATCH
+print("="*60)
+print("Test 8: MERGE relationship with MATCH validation")
+try:
+    result = conn.execute(
+        "SELECT cypher_execute("
+        "'MERGE (a:Person {name:\"Alice\"}) "
+        "MERGE (b:Person {name:\"Bob\"}) "
+        "MERGE (a)-[:KNOWS]->(b) "
+        "WITH a, b MATCH (a)-[:KNOWS]->(b) RETURN a, b')"
+    ).fetchone()
+    print(f"✅ MERGE relationship SUCCESS: {result}\n")
+except Exception as e:
+    print(f"❌ MERGE relationship FAILED: {e}\n")
+
 conn.close()
 print("Tests completed")

@@ -21,6 +21,7 @@ typedef enum {
     // Keywords
     CYPHER_TOK_MATCH,
     CYPHER_TOK_OPTIONAL,
+    CYPHER_TOK_ON,
     CYPHER_TOK_WHERE,
     CYPHER_TOK_RETURN,
     CYPHER_TOK_CREATE,
@@ -177,6 +178,8 @@ typedef enum {
     CYPHER_AST_REGEX,
 
     // Mutation clauses
+    CYPHER_AST_ON_CREATE,
+    CYPHER_AST_ON_MATCH,
     CYPHER_AST_CREATE,
     CYPHER_AST_MERGE,
     CYPHER_AST_SET,
@@ -228,6 +231,7 @@ const char *cypherAstNodeTypeName(CypherAstNodeType type);
 struct CypherParser {
     char *zErrorMsg;
     CypherAst *pAst;
+    int bInMergeClause;
 };
 
 // Parser Functions
