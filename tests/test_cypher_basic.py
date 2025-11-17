@@ -10,7 +10,7 @@ conn.enable_load_extension(True)
 
 # Load extension
 try:
-    conn.load_extension('./build/libgraph.dylib')
+    conn.load_extension('./build/libgraph')
     print("✅ Extension loaded\n")
 except Exception as e:
     print(f"❌ Failed to load extension: {e}")

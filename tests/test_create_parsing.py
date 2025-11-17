@@ -17,10 +17,10 @@ def test_create_parsing():
 
     # Load the graph extension
     try:
-        conn.load_extension("../build/libgraph.dylib")
+        conn.load_extension("../build/libgraph")
     except sqlite3.OperationalError as e:
         try:
-            conn.load_extension("../build/libgraph.so")
+            conn.load_extension("../build/libgraph")
         except sqlite3.OperationalError as e2:
             print(f"❌ Failed to load extension: {e}, {e2}")
             return False

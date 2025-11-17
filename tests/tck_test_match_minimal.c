@@ -17,9 +17,9 @@ void setUp(void) {
     sqlite3_enable_load_extension(db, 1);
 
     #ifdef __APPLE__
-    rc = sqlite3_load_extension(db, "../build/libgraph.dylib", "sqlite3_graph_init", &error_msg);
+    rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", &error_msg);
 #else
-    rc = sqlite3_load_extension(db, "../build/libgraph.so", "sqlite3_graph_init", &error_msg);
+    rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", &error_msg);
 #endif
     if (rc != SQLITE_OK) {
         printf("Failed to load graph extension: %s\n", error_msg);

@@ -26,7 +26,7 @@ sqlite3* create_test_db(void) {
     rc = sqlite3_enable_load_extension(db, 1);
     TEST_ASSERT_EQUAL(SQLITE_OK, rc);
     
-    rc = sqlite3_load_extension(db, "../build/libgraph.so", "sqlite3_graph_init", NULL);
+    rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", NULL);
     TEST_ASSERT_EQUAL(SQLITE_OK, rc);
     
     // Create backing tables

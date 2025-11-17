@@ -15,7 +15,7 @@ void debug_create_test(void) {
     sqlite3_enable_load_extension(db, 1);
     
     // Load graph extension
-    rc = sqlite3_load_extension(db, "../build/libgraph.so", "sqlite3_graph_init", &error_msg);
+    rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", &error_msg);
     printf("2. Load extension: %s\n", rc == SQLITE_OK ? "OK" : (error_msg ? error_msg : "Unknown error"));
     if (error_msg) {
         sqlite3_free(error_msg);

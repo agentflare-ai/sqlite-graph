@@ -13,10 +13,10 @@ def test_create_debug():
     conn.enable_load_extension(True)
 
     try:
-        conn.load_extension("./build/libgraph.dylib")
+        conn.load_extension("./build/libgraph")
     except:
         try:
-            conn.load_extension("./build/libgraph.so")
+            conn.load_extension("./build/libgraph")
         except Exception as e:
             print(f"❌ Failed to load extension: {e}")
             return False

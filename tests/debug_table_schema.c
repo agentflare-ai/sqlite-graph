@@ -10,7 +10,7 @@ int main(void) {
     int rc = sqlite3_open(":memory:", &db);
     sqlite3_enable_load_extension(db, 1);
     
-    rc = sqlite3_load_extension(db, "../build/libgraph.so", "sqlite3_graph_init", &error_msg);
+    rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", &error_msg);
     if (rc != SQLITE_OK) {
         printf("Load extension failed: %s\n", error_msg);
         return 1;
