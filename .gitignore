@@ -187,3 +187,4 @@ docs/.doctrees/
 .agents/
 .tck/
 tck/
+logs/
