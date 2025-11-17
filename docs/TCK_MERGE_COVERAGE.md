@@ -201,20 +201,31 @@ MERGE (a)-[r:KNOWS]->(a)  // Should create self-relationship
 
 ## Recommendations
 
-### Short-term Fixes
+### Short-term Fixes (High Priority)
 
-1. **Fix Property Expression Evaluation** (High Priority)
+1. **Fix MERGE Relationship with Bare Patterns** (CRITICAL)
+   - Tests: Merge5-01, Merge5-02, Merge5-03, Merge5-04, Merge5-08, Merge5-11, Merge5-17, Merge5-19
+   - Impact: Would add 8 more passing tests in Merge5
+   - Effort: Medium - needs investigation of node creation logic
+   - **This is blocking most Merge5 tests**
+
+2. **Fix Incoming Relationship Direction Parsing** (High Priority)
+   - Test: Merge5-07
+   - Impact: Would add 1 more passing test
+   - Effort: Low - parser enhancement needed
+
+3. **Improve Error Validation** (High Priority)
+   - Tests: Merge1-15, Merge1-17, Merge2-06, Merge3-05, Merge5-22, Merge5-23, Merge5-24, Merge5-26, Merge5-29
+   - Impact: Would add 9 more passing tests total
+   - Effort: Low to Medium
+
+4. **Fix Property Expression Evaluation** (High Priority)
    - Tests: Merge1-11, Merge1-12, Merge2-05, Merge4-02
-   - Impact: Would add 4 more passing tests (total: 17/30 = 57%)
+   - Impact: Would add 4 more passing tests
    - Effort: Medium
 
-2. **Improve Error Validation** (High Priority)
-   - Tests: Merge1-15, Merge1-17, Merge2-06, Merge3-05
-   - Impact: Would add 4 more passing tests (total: 17/30 = 57%)
-   - Effort: Low
-
-3. **Fix Multiple Elements Matching** (Medium Priority)
-   - Test: Merge1-07
+5. **Fix MATCH with MERGE Relationship (self-relationships)** (Medium Priority)
+   - Test: Merge5-18
    - Impact: Would add 1 more passing test
    - Effort: Medium
 
@@ -222,28 +233,45 @@ MERGE (a)-[r:KNOWS]->(a)  // Should create self-relationship
 
 1. **Implement Label Assignment** (Merge2-01, Merge3-01, Merge3-02, Merge4-01)
 2. **Implement Multiple Labels** (Merge1-10)
-3. **Implement Path Binding** (Merge1-13)
-4. **Implement DELETE Clause** (Merge1-14)
-5. **Implement Parameters** (Merge1-16)
+3. **Implement Path Binding** (Merge1-13, Merge5-10)
+4. **Implement DELETE Clause** (Merge1-14, Merge5-20, Merge5-21)
+5. **Implement Parameters** (Merge1-16, Merge5-27)
+6. **Implement List Properties** (Merge5-14, Merge5-15)
 
-## Roadmap for 80% Compliance
+## Roadmap for Higher Compliance
 
-To achieve 80%+ compliance (24+ out of 30 tests passing):
+### Merge1-4 (Node MERGE) - Target: 80%+ (24/30 tests)
 
 1. ✅ **Phase 6.1 Complete:** 13 tests passing (43%)
 2. 🔄 **Fix Property Expressions:** +4 tests = 17 passing (57%)
-3. 🔄 **Fix Error Validation:** +4 tests = 21 passing (70%)
+3. 🔄 **Fix Error Validation (nodes):** +4 tests = 21 passing (70%)
 4. 🔄 **Fix Multiple Elements:** +1 test = 22 passing (73%)
 5. 📋 **Implement Label Assignment:** +4 tests = 26 passing (87%)
+
+### Merge5 (Relationship MERGE) - Target: 60%+ (17/29 tests)
+
+1. ✅ **Phase 6.5 Complete:** 6 tests passing (21%)
+2. 🔄 **Fix Bare Relationship Patterns:** +8 tests = 14 passing (48%)
+3. 🔄 **Fix Error Validation (rels):** +5 tests = 19 passing (66%)
+4. 🔄 **Fix Incoming Direction + Self-rels:** +2 tests = 21 passing (72%)
 
 ## Notes
 
 - TCK tests are more comprehensive than custom integration tests
 - Many edge cases discovered through this exercise
-- The current 43% pass rate represents solid foundational MERGE support
-- Most failures are due to missing features rather than incorrect behavior
+- The current **32% overall pass rate (19/59)** represents foundational MERGE support for both nodes and relationships
+- Most failures are due to missing features or specific bugs rather than fundamentally incorrect behavior
 - Error handling needs improvement to properly reject invalid queries
+- **Merge5 key finding:** The core relationship MERGE implementation exists and works for patterns with node properties, but fails for bare patterns
+
+### Key Insights from Merge5
+
+1. **Core functionality is present:** Relationship MERGE works when nodes have identifying properties
+2. **Main blocker:** Bare relationship patterns (`MERGE (a)-[r:TYPE]->(b)`) don't create both endpoint nodes correctly
+3. **Parser limitation:** Incoming relationship direction (`<-`) not supported in MERGE
+4. **Error validation weak:** Most error cases don't properly fail as expected
 
 ---
 
-*Generated as part of Phase 6.1 - TCK Test Enablement*
+*Generated as part of Phase 6.1 - TCK Test Enablement (Merge1-4)*
+*Updated in Phase 6.5 - TCK Merge5 Implementation*

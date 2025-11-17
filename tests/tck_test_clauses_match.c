@@ -19,12 +19,18 @@ void setUp(void) {
     // Enable loading extensions
     sqlite3_enable_load_extension(db, 1);
 
-    // Load graph extension
-    rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", &error_msg);
+    // Load graph extension (try multiple paths for different working directories)
+    rc = sqlite3_load_extension(db, "build/libgraph", "sqlite3_graph_init", &error_msg);
     if (rc != SQLITE_OK) {
-        printf("Failed to load graph extension: %s\n", error_msg);
+        // Try relative path from tests directory
         sqlite3_free(error_msg);
         error_msg = NULL;
+        rc = sqlite3_load_extension(db, "../build/libgraph", "sqlite3_graph_init", &error_msg);
+        if (rc != SQLITE_OK) {
+            printf("Failed to load graph extension: %s\n", error_msg);
+            sqlite3_free(error_msg);
+            error_msg = NULL;
+        }
     }
     TEST_ASSERT_EQUAL(SQLITE_OK, rc);
     fprintf(stderr, "setUp completed\n");
@@ -183,55 +189,55 @@ void test_clauses_match_Match1_02(void) {
 }
 
 void test_clauses_match_Match1_03(void) {
-    // TCK: Return multiple nodes
-    // Cypher: MATCH (n) RETURN n
+    // TCK Scenario 3: Matching nodes using multiple labels
+    // Cypher: MATCH (a:A:B) RETURN a
+    // Expected: 2 nodes (:A:B) and (:A:B:C)
 
     sqlite3_stmt *stmt;
     int rc;
 
-    // Create graph virtual table (creates backing tables automatically)
+    // Create graph virtual table
     rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
     if (rc != SQLITE_OK) {
         printf("Graph table creation failed: %s\n", error_msg);
         TEST_FAIL();
         return;
     }
-    
-    // Setup query 1
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE ()')", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        printf("Setup query 1 prepare failed: %s\n", sqlite3_errmsg(db));
-        TEST_FAIL();
-        return;
-    }
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_ROW) {
-        printf("Setup query 1 execute failed: %s\n", sqlite3_errmsg(db));
+
+    // Setup: Create nodes with various label combinations
+    const char *setup_queries[] = {
+        "CREATE (:A:B:C)",
+        "CREATE (:A:B)",
+        "CREATE (:A:C)",
+        "CREATE (:B:C)",
+        "CREATE (:A)",
+        "CREATE (:B)",
+        "CREATE (:C)",
+        "CREATE ({name: ':A:B:C'})",
+        "CREATE ({abc: 'abc'})",
+        "CREATE ()"
+    };
+
+    for (int i = 0; i < 10; i++) {
+        rc = sqlite3_prepare_v2(db, "SELECT cypher_execute(?)", -1, &stmt, NULL);
+        if (rc != SQLITE_OK) {
+            printf("Setup query %d prepare failed: %s\n", i+1, sqlite3_errmsg(db));
+            TEST_FAIL();
+            return;
+        }
+        sqlite3_bind_text(stmt, 1, setup_queries[i], -1, SQLITE_STATIC);
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_ROW) {
+            printf("Setup query %d execute failed: %s\n", i+1, sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
         sqlite3_finalize(stmt);
-        TEST_FAIL();
-        return;
     }
-    sqlite3_finalize(stmt);
 
-    // Setup query 2
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE ()')", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        printf("Setup query 2 prepare failed: %s\n", sqlite3_errmsg(db));
-        TEST_FAIL();
-        return;
-    }
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_ROW) {
-        printf("Setup query 2 execute failed: %s\n", sqlite3_errmsg(db));
-        sqlite3_finalize(stmt);
-        TEST_FAIL();
-        return;
-    }
-    sqlite3_finalize(stmt);
-
-    // Execute Cypher query
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('MATCH (n) RETURN n')", -1, &stmt, NULL);
-
+    // Execute test query: MATCH (a:A:B) RETURN a
+    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('MATCH (a:A:B) RETURN a')", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         printf("Cypher prepare failed: %s\n", sqlite3_errmsg(db));
         TEST_FAIL();
@@ -245,12 +251,12 @@ void test_clauses_match_Match1_03(void) {
         TEST_FAIL();
         return;
     }
-    
+
     // Parse JSON result
     const char *result_json = (const char*)sqlite3_column_text(stmt, 0);
     TEST_ASSERT_NOT_NULL(result_json);
 
-    // Count results (simple JSON array counting)
+    // Count results - expect 2 (nodes with both :A and :B labels)
     int count = 0;
     if (result_json[0] == '[') {
         const char *p = result_json;
@@ -265,39 +271,48 @@ void test_clauses_match_Match1_03(void) {
 }
 
 void test_clauses_match_Match1_04(void) {
-    // TCK: Return node with label
-    // Cypher: MATCH (n:Label) RETURN n
+    // TCK Scenario 4: Simple node inline property predicate
+    // Cypher: MATCH (n {name: 'bar'}) RETURN n
+    // Expected: 1 node ({name: 'bar'})
 
     sqlite3_stmt *stmt;
     int rc;
 
-    // Create graph virtual table (creates backing tables automatically)
+    // Create graph virtual table
     rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
     if (rc != SQLITE_OK) {
         printf("Graph table creation failed: %s\n", error_msg);
         TEST_FAIL();
         return;
     }
-    
-    // Setup query 1
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE (:Label)')", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        printf("Setup query 1 prepare failed: %s\n", sqlite3_errmsg(db));
-        TEST_FAIL();
-        return;
-    }
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_ROW) {
-        printf("Setup query 1 execute failed: %s\n", sqlite3_errmsg(db));
+
+    // Setup: Create nodes with different properties
+    const char *setup_queries[] = {
+        "CREATE ({name: 'bar'})",
+        "CREATE ({name: 'monkey'})",
+        "CREATE ({firstname: 'bar'})"
+    };
+
+    for (int i = 0; i < 3; i++) {
+        rc = sqlite3_prepare_v2(db, "SELECT cypher_execute(?)", -1, &stmt, NULL);
+        if (rc != SQLITE_OK) {
+            printf("Setup query %d prepare failed: %s\n", i+1, sqlite3_errmsg(db));
+            TEST_FAIL();
+            return;
+        }
+        sqlite3_bind_text(stmt, 1, setup_queries[i], -1, SQLITE_STATIC);
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_ROW) {
+            printf("Setup query %d execute failed: %s\n", i+1, sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
         sqlite3_finalize(stmt);
-        TEST_FAIL();
-        return;
     }
-    sqlite3_finalize(stmt);
 
-    // Execute Cypher query
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('MATCH (n:Label) RETURN n')", -1, &stmt, NULL);
-
+    // Execute test query: MATCH (n {name: 'bar'}) RETURN n
+    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('MATCH (n {name: ''bar''}) RETURN n')", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         printf("Cypher prepare failed: %s\n", sqlite3_errmsg(db));
         TEST_FAIL();
@@ -311,12 +326,12 @@ void test_clauses_match_Match1_04(void) {
         TEST_FAIL();
         return;
     }
-    
+
     // Parse JSON result
     const char *result_json = (const char*)sqlite3_column_text(stmt, 0);
     TEST_ASSERT_NOT_NULL(result_json);
 
-    // Count results (simple JSON array counting)
+    // Count results - expect 1 (only {name: 'bar'} matches)
     int count = 0;
     if (result_json[0] == '[') {
         const char *p = result_json;
@@ -331,71 +346,48 @@ void test_clauses_match_Match1_04(void) {
 }
 
 void test_clauses_match_Match1_05(void) {
-    // TCK: Match labeled node among mixed nodes
-    // Cypher: MATCH (n:Label) RETURN n
+    // TCK Scenario 5: Use multiple MATCH clauses to do a Cartesian product
+    // Cypher: MATCH (n), (m) RETURN n.num AS n, m.num AS m
+    // Expected: 9 rows (3×3 Cartesian product)
 
     sqlite3_stmt *stmt;
     int rc;
 
-    // Create graph virtual table (creates backing tables automatically)
+    // Create graph virtual table
     rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
     if (rc != SQLITE_OK) {
         printf("Graph table creation failed: %s\n", error_msg);
         TEST_FAIL();
         return;
     }
-    
-    // Setup query 1
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE ()')", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        printf("Setup query 1 prepare failed: %s\n", sqlite3_errmsg(db));
-        TEST_FAIL();
-        return;
-    }
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_ROW) {
-        printf("Setup query 1 execute failed: %s\n", sqlite3_errmsg(db));
+
+    // Setup: Create 3 nodes with num property
+    const char *setup_queries[] = {
+        "CREATE ({num: 1})",
+        "CREATE ({num: 2})",
+        "CREATE ({num: 3})"
+    };
+
+    for (int i = 0; i < 3; i++) {
+        rc = sqlite3_prepare_v2(db, "SELECT cypher_execute(?)", -1, &stmt, NULL);
+        if (rc != SQLITE_OK) {
+            printf("Setup query %d prepare failed: %s\n", i+1, sqlite3_errmsg(db));
+            TEST_FAIL();
+            return;
+        }
+        sqlite3_bind_text(stmt, 1, setup_queries[i], -1, SQLITE_STATIC);
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_ROW) {
+            printf("Setup query %d execute failed: %s\n", i+1, sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
         sqlite3_finalize(stmt);
-        TEST_FAIL();
-        return;
     }
-    sqlite3_finalize(stmt);
 
-    // Setup query 2
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE (:Label)')", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        printf("Setup query 2 prepare failed: %s\n", sqlite3_errmsg(db));
-        TEST_FAIL();
-        return;
-    }
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_ROW) {
-        printf("Setup query 2 execute failed: %s\n", sqlite3_errmsg(db));
-        sqlite3_finalize(stmt);
-        TEST_FAIL();
-        return;
-    }
-    sqlite3_finalize(stmt);
-
-    // Setup query 3
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('CREATE ()')", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        printf("Setup query 3 prepare failed: %s\n", sqlite3_errmsg(db));
-        TEST_FAIL();
-        return;
-    }
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_ROW) {
-        printf("Setup query 3 execute failed: %s\n", sqlite3_errmsg(db));
-        sqlite3_finalize(stmt);
-        TEST_FAIL();
-        return;
-    }
-    sqlite3_finalize(stmt);
-
-    // Execute Cypher query
-    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('MATCH (n:Label) RETURN n')", -1, &stmt, NULL);
-
+    // Execute test query: MATCH (n), (m) RETURN n.num AS n, m.num AS m
+    rc = sqlite3_prepare_v2(db, "SELECT cypher_execute('MATCH (n), (m) RETURN n.num AS n, m.num AS m')", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         printf("Cypher prepare failed: %s\n", sqlite3_errmsg(db));
         TEST_FAIL();
@@ -409,12 +401,12 @@ void test_clauses_match_Match1_05(void) {
         TEST_FAIL();
         return;
     }
-    
+
     // Parse JSON result
     const char *result_json = (const char*)sqlite3_column_text(stmt, 0);
     TEST_ASSERT_NOT_NULL(result_json);
 
-    // Count results (simple JSON array counting)
+    // Count results - expect 9 (3×3 Cartesian product)
     int count = 0;
     if (result_json[0] == '[') {
         const char *p = result_json;
@@ -423,7 +415,7 @@ void test_clauses_match_Match1_05(void) {
             p++;
         }
     }
-    TEST_ASSERT_EQUAL(1, count);
+    TEST_ASSERT_EQUAL(9, count);
 
     sqlite3_finalize(stmt);
 }
@@ -511,51 +503,215 @@ void test_clauses_match_Match1_06(void) {
 }
 
 void test_clauses_match_Match1_07(void) {
-    // Parse/validate test for: [7] Fail when a relationship has the same variable in a preceding MATCH
-    // Feature: Match1 - Match nodes
-    
-    // TODO: Implement parsing/validation test for clauses-match-Match1-07
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-match-Match1-07");
+    // TCK Match1-07: Fail when a relationship has the same variable in a preceding MATCH
+    // Test pattern: MATCH ()-[r]-() MATCH (r) RETURN r
+    // Expected: Should raise VariableTypeConflict error during planning
 
+    // Create graph virtual table
+    int rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
+    if (rc != SQLITE_OK) {
+        printf("Graph creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
+
+    // This query should FAIL because 'r' is first used as a relationship, then as a node
+    const char *query = "SELECT cypher_execute('MATCH ()-[r]-() MATCH (r) RETURN r')";
+    sqlite3_stmt *stmt;
+    rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
+
+    // The query should fail either at prepare time or execution time with an error message
+    // about variable type conflict
+    if (rc == SQLITE_OK) {
+        // If prepare succeeded, execution should fail
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            const char *result = (const char*)sqlite3_column_text(stmt, 0);
+            printf("Expected error, but query succeeded with result: %s\n", result ? result : "NULL");
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
+        // Check that we got an error message about variable type conflict
+        const char *err = sqlite3_errmsg(db);
+        if (!err || (strstr(err, "already declared") == NULL && strstr(err, "type conflict") == NULL)) {
+            printf("Expected variable type conflict error, got: %s\n", err ? err : "NULL");
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        // Prepare failed - check error message
+        const char *err = sqlite3_errmsg(db);
+        if (!err || (strstr(err, "already declared") == NULL && strstr(err, "type conflict") == NULL)) {
+            printf("Expected variable type conflict error during prepare, got: %s\n", err ? err : "NULL");
+            TEST_FAIL();
+            return;
+        }
+    }
+
+    // Test passes if we got the expected error
+    TEST_PASS();
 }
 
 void test_clauses_match_Match1_08(void) {
-    // Parse/validate test for: [8] Fail when a path has the same variable in a preceding MATCH
-    // Feature: Match1 - Match nodes
-    
-    // TODO: Implement parsing/validation test for clauses-match-Match1-08
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-match-Match1-08");
+    // TCK Match1-08: Fail when a path has the same variable in a preceding MATCH
+    // Test pattern: MATCH r = ()-[]->() MATCH (r) RETURN r
+    // Expected: Should raise VariableTypeConflict error during planning
 
+    // Create graph virtual table
+    int rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
+    if (rc != SQLITE_OK) {
+        printf("Graph creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
+
+    // This query should FAIL because 'r' is used as a path in first MATCH and as a node in second MATCH
+    const char *query = "SELECT cypher_execute('MATCH r = ()-[]->() MATCH (r) RETURN r')";
+    sqlite3_stmt *stmt;
+    rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
+
+    // The query should fail either at prepare time or execution time with an error message
+    // about variable type conflict
+    if (rc == SQLITE_OK) {
+        // If prepare succeeded, execution should fail
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            const char *result = (const char*)sqlite3_column_text(stmt, 0);
+            printf("Expected error, but query succeeded with result: %s\n", result ? result : "NULL");
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
+        // Check that we got an error message about variable type conflict
+        const char *err = sqlite3_errmsg(db);
+        if (!err || (strstr(err, "already declared") == NULL && strstr(err, "type conflict") == NULL)) {
+            printf("Expected variable type conflict error, got: %s\n", err ? err : "NULL");
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        // Prepare failed - check error message
+        const char *err = sqlite3_errmsg(db);
+        if (!err || (strstr(err, "already declared") == NULL && strstr(err, "type conflict") == NULL)) {
+            printf("Expected variable type conflict error during prepare, got: %s\n", err ? err : "NULL");
+            TEST_FAIL();
+            return;
+        }
+    }
+
+    // Test passes if we got the expected error
+    TEST_PASS();
 }
 
 void test_clauses_match_Match1_09(void) {
-    // Parse/validate test for: [9] Fail when a relationship has the same variable in the same pattern
-    // Feature: Match1 - Match nodes
-    
-    // TODO: Implement parsing/validation test for clauses-match-Match1-09
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-match-Match1-09");
+    // TCK Match1-09: Fail when a relationship has the same variable in the same pattern
+    // Test pattern: MATCH ()-[r]-(r) RETURN r
+    // Expected: Should raise VariableTypeConflict error during planning
 
+    // Create graph virtual table
+    int rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
+    if (rc != SQLITE_OK) {
+        printf("Graph creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
+
+    // This query should FAIL because 'r' is used as both a relationship and a node in same pattern
+    const char *query = "SELECT cypher_execute('MATCH ()-[r]-(r) RETURN r')";
+    sqlite3_stmt *stmt;
+    rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
+
+    // The query should fail either at prepare time or execution time with an error message
+    // about variable type conflict
+    if (rc == SQLITE_OK) {
+        // If prepare succeeded, execution should fail
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            const char *result = (const char*)sqlite3_column_text(stmt, 0);
+            printf("Expected error, but query succeeded with result: %s\n", result ? result : "NULL");
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
+        // Check that we got an error message about variable type conflict
+        const char *err = sqlite3_errmsg(db);
+        if (!err || (strstr(err, "already declared") == NULL && strstr(err, "type conflict") == NULL)) {
+            printf("Expected variable type conflict error, got: %s\n", err ? err : "NULL");
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        // Prepare failed - check error message
+        const char *err = sqlite3_errmsg(db);
+        if (!err || (strstr(err, "already declared") == NULL && strstr(err, "type conflict") == NULL)) {
+            printf("Expected variable type conflict error during prepare, got: %s\n", err ? err : "NULL");
+            TEST_FAIL();
+            return;
+        }
+    }
+
+    // Test passes if we got the expected error
+    TEST_PASS();
 }
 
 void test_clauses_match_Match1_10(void) {
-    // Parse/validate test for: [10] Fail when a path has the same variable in the same pattern
-    // Feature: Match1 - Match nodes
-    
-    // TODO: Implement parsing/validation test for clauses-match-Match1-10
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-match-Match1-10");
+    // TCK Match1-10: Fail when a path has the same variable in the same pattern
+    // Test pattern: MATCH r = ()-[]->(), (r) RETURN r
+    // Expected: Should raise VariableTypeConflict error during planning
 
+    // Create graph virtual table
+    int rc = sqlite3_exec(db, "CREATE VIRTUAL TABLE graph USING graph()", NULL, NULL, &error_msg);
+    if (rc != SQLITE_OK) {
+        printf("Graph creation failed: %s\n", error_msg);
+        TEST_FAIL();
+        return;
+    }
+
+    // This query should FAIL because 'r' is used as a path first, then as a node in same pattern
+    const char *query = "SELECT cypher_execute('MATCH r = ()-[]->(), (r) RETURN r')";
+    sqlite3_stmt *stmt;
+    rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
+
+    // The query should fail either at prepare time or execution time with an error message
+    // about variable type conflict
+    if (rc == SQLITE_OK) {
+        // If prepare succeeded, execution should fail
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            const char *result = (const char*)sqlite3_column_text(stmt, 0);
+            printf("Expected error, but query succeeded with result: %s\n", result ? result : "NULL");
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
+        // Check that we got an error message about variable type conflict
+        const char *err = sqlite3_errmsg(db);
+        if (!err || (strstr(err, "already declared") == NULL && strstr(err, "type conflict") == NULL)) {
+            printf("Expected variable type conflict error, got: %s\n", err ? err : "NULL");
+            sqlite3_finalize(stmt);
+            TEST_FAIL();
+            return;
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        // Prepare failed - check error message
+        const char *err = sqlite3_errmsg(db);
+        if (!err || (strstr(err, "already declared") == NULL && strstr(err, "type conflict") == NULL)) {
+            printf("Expected variable type conflict error during prepare, got: %s\n", err ? err : "NULL");
+            TEST_FAIL();
+            return;
+        }
+    }
+
+    // Test passes if we got the expected error
+    TEST_PASS();
 }
 
 void test_clauses_match_Match1_11(void) {

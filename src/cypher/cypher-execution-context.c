@@ -401,18 +401,34 @@ CypherResult *cypherResultCreate(void) {
 ** Destroy a result row and free all associated memory.
 ** Safe to call with NULL pointer.
 */
-void cypherResultDestroy(CypherResult *pResult) {
+/*
+** Clear the contents of a result row (for stack-allocated results).
+** Does NOT free the pResult struct itself.
+*/
+void cypherResultClear(CypherResult *pResult) {
   int i;
-  
+
   if( !pResult ) return;
-  
-  /* Free column names */
+
+  /* Free column names and values */
   for( i = 0; i < pResult->nColumns; i++ ) {
     sqlite3_free(pResult->azColumnNames[i]);
     cypherValueDestroy(&pResult->aValues[i]);
   }
   sqlite3_free(pResult->azColumnNames);
   sqlite3_free(pResult->aValues);
+
+  /* Reset to initial state */
+  pResult->azColumnNames = NULL;
+  pResult->aValues = NULL;
+  pResult->nColumns = 0;
+  pResult->nColumnsAlloc = 0;
+}
+
+void cypherResultDestroy(CypherResult *pResult) {
+  if( !pResult ) return;
+
+  cypherResultClear(pResult);
   sqlite3_free(pResult);
 }
 

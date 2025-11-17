@@ -610,19 +610,46 @@ void test_clauses_merge_Merge5_13(void) {
 void test_clauses_merge_Merge5_14(void) {
     // [14] Using list properties via variable
     // Feature: Merge5 - Merge relationships
+    // NOTE: Original TCK uses UNWIND and split() which aren't implemented yet
+    // This is a simplified version testing the core feature: list properties in MERGE
+    // NOTE: Using bare MERGE pattern as MATCH...CREATE with bound nodes has issues
 
-    // List properties are not currently implemented
-    TEST_IGNORE_MESSAGE("Feature not implemented: List properties");
+    // First MERGE with list property - should create nodes and relationship
+    exec_cypher("MERGE ()-[r:FB {roles: ['admin', 'user']}]->()");
+    assert_node_count(2);
+    assert_edge_count(1);
 
+    // Second MERGE with same list property - should match existing (not create new)
+    exec_cypher("MERGE ()-[r:FB {roles: ['admin', 'user']}]->()");
+    assert_node_count(2);  // Should still be 2
+    assert_edge_count(1);  // Should still be 1, not 2
+
+    // MERGE with different list property - should create new relationship (and possibly nodes)
+    exec_cypher("MERGE ()-[r:FB {roles: ['guest']}]->()");
+    assert_edge_count(2);  // Now should be 2 relationships
 }
 
 void test_clauses_merge_Merge5_15(void) {
     // [15] Matching using list property
     // Feature: Merge5 - Merge relationships
 
-    // List properties are not currently implemented
-    TEST_IGNORE_MESSAGE("Feature not implemented: List properties");
+    // Create relationship with a list property
+    exec_cypher("CREATE ()-[:T {numbers: [42, 43]}]->()");
+    assert_node_count(2);
+    assert_edge_count(1);
 
+    // MERGE with the same list property should MATCH (not create new)
+    exec_cypher("MERGE ()-[r:T {numbers: [42, 43]}]->()");
+
+    // Should still have only 2 nodes and 1 relationship (matched existing, didn't create new)
+    assert_node_count(2);
+    assert_edge_count(1);
+
+    // MERGE with different list property should CREATE new relationship and nodes
+    exec_cypher("MERGE ()-[r:T {numbers: [44, 45]}]->()");
+
+    // Should now have 2 relationships (and possibly more nodes)
+    assert_edge_count(2);
 }
 
 void test_clauses_merge_Merge5_16(void) {

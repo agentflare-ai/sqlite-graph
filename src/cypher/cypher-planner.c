@@ -6,6 +6,7 @@ extern const sqlite3_api_routines *sqlite3_api;
 #endif
 /* SQLITE_EXTENSION_INIT1 - removed to prevent multiple definition */
 #include "cypher-planner.h"
+#include "cypher-errors.h"
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
@@ -37,6 +38,321 @@ static int mergeDetailsAddSetOp(MergeSetOp **ppaOps, int *pnOps, const char *zVa
                                 const char *zProperty, CypherAst *pValue);
 static int mergeProcessOnClause(MergeClauseDetails *pDetails, CypherAst *pClause,
                                 PlanContext *pContext, int bCreateClause);
+
+/* CREATE validation helpers */
+typedef struct CreateVarInfo {
+  char *zName;
+  CypherAst *pFirstOccurrence;
+  int nLabels;
+  char **azLabels;
+  int hasProperties;
+} CreateVarInfo;
+
+static CreateVarInfo *createVarInfoCreate(const char *zName, CypherAst *pAst) {
+  CreateVarInfo *pInfo = sqlite3_malloc(sizeof(CreateVarInfo));
+  if( !pInfo ) return NULL;
+  memset(pInfo, 0, sizeof(CreateVarInfo));
+  pInfo->zName = sqlite3_mprintf("%s", zName);
+  pInfo->pFirstOccurrence = pAst;
+  return pInfo;
+}
+
+static void createVarInfoDestroy(CreateVarInfo *pInfo) {
+  int i;
+  if( !pInfo ) return;
+  sqlite3_free(pInfo->zName);
+  for( i = 0; i < pInfo->nLabels; i++ ) {
+    sqlite3_free(pInfo->azLabels[i]);
+  }
+  sqlite3_free(pInfo->azLabels);
+  sqlite3_free(pInfo);
+}
+
+static int createVarInfoAddLabel(CreateVarInfo *pInfo, const char *zLabel) {
+  char **azNew;
+  int nNew;
+
+  if( !pInfo || !zLabel ) return SQLITE_MISUSE;
+
+  nNew = pInfo->nLabels + 1;
+  azNew = sqlite3_realloc(pInfo->azLabels, nNew * sizeof(char*));
+  if( !azNew ) return SQLITE_NOMEM;
+
+  azNew[pInfo->nLabels] = sqlite3_mprintf("%s", zLabel);
+  if( !azNew[pInfo->nLabels] ) return SQLITE_NOMEM;
+
+  pInfo->azLabels = azNew;
+  pInfo->nLabels = nNew;
+  return SQLITE_OK;
+}
+
+/*
+** Recursively validate that all identifiers used in an expression are defined.
+** Returns SQLITE_OK if all variables are defined, error code otherwise.
+** Sets error message in pContext on failure.
+*/
+static int validateExpressionVariables(CypherAst *pExpr, PlanContext *pContext,
+                                       CreateVarInfo **apVars, int nVars) {
+  int i, rc;
+
+  if( !pExpr ) return SQLITE_OK;
+
+  /* Check if this is an identifier (variable reference) */
+  if( cypherAstIsType(pExpr, CYPHER_AST_IDENTIFIER) ) {
+    const char *zVar = cypherAstGetValue(pExpr);
+    if( !zVar ) return SQLITE_OK;
+
+    /* Check if variable is defined in current context */
+    int found = 0;
+
+    /* Check in existing bound variables from previous clauses */
+    for( i = 0; i < pContext->nVariables; i++ ) {
+      if( pContext->azVariables[i] && strcmp(pContext->azVariables[i], zVar) == 0 ) {
+        found = 1;
+        break;
+      }
+    }
+
+    /* Check in variables being defined in this CREATE pattern */
+    if( !found ) {
+      for( i = 0; i < nVars; i++ ) {
+        if( strcmp(apVars[i]->zName, zVar) == 0 ) {
+          found = 1;
+          break;
+        }
+      }
+    }
+
+    if( !found ) {
+      /* Undefined variable used in expression */
+      pContext->zErrorMsg = sqlite3_mprintf(
+        "SyntaxError: UndefinedVariable - Variable `%s` is not defined",
+        zVar);
+      return CYPHER_ERROR_SEMANTIC_UNDEFINED_VARIABLE;
+    }
+  }
+
+  /* Recursively check all children */
+  for( i = 0; i < pExpr->nChildren; i++ ) {
+    rc = validateExpressionVariables(pExpr->apChildren[i], pContext, apVars, nVars);
+    if( rc != SQLITE_OK ) return rc;
+  }
+
+  return SQLITE_OK;
+}
+
+/*
+** Validate CREATE pattern for variable binding conflicts.
+** Returns SQLITE_OK if valid, error code otherwise.
+** Sets error message in pContext on failure.
+*/
+static int validateCreatePattern(CypherAst *pPattern, PlanContext *pContext) {
+  CreateVarInfo **apVars = NULL;
+  int nVars = 0;
+  int i, j, k;
+  int rc = SQLITE_OK;
+  CypherAst *pPath;
+
+  if( !pPattern || !pContext ) return SQLITE_MISUSE;
+
+  /* Handle both PATTERN and PATTERN_LIST */
+  int nPaths = cypherAstIsType(pPattern, CYPHER_AST_PATTERN_LIST) ?
+               pPattern->nChildren : 1;
+
+  for( i = 0; i < nPaths; i++ ) {
+    pPath = cypherAstIsType(pPattern, CYPHER_AST_PATTERN_LIST) ?
+            pPattern->apChildren[i] : pPattern;
+
+    if( !cypherAstIsType(pPath, CYPHER_AST_PATTERN) ) continue;
+
+    /* Check if this is a single standalone node or a relationship pattern */
+    int isRelationshipPattern = 0;
+    for( j = 0; j < pPath->nChildren; j++ ) {
+      if( cypherAstIsType(pPath->apChildren[j], CYPHER_AST_REL_PATTERN) ) {
+        isRelationshipPattern = 1;
+        break;
+      }
+    }
+
+    /* Walk through pattern elements (nodes and relationships) */
+    for( j = 0; j < pPath->nChildren; j++ ) {
+      CypherAst *pElement = pPath->apChildren[j];
+      const char *zVar = NULL;
+      CypherAst *pLabels = NULL;
+      CypherAst *pProps = NULL;
+
+      /* Extract variable name and metadata from node patterns */
+      if( cypherAstIsType(pElement, CYPHER_AST_NODE_PATTERN) ) {
+        /* Get variable name */
+        if( pElement->nChildren > 0 &&
+            cypherAstIsType(pElement->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+          zVar = cypherAstGetValue(pElement->apChildren[0]);
+        }
+
+        /* Get labels and properties */
+        for( k = 0; k < pElement->nChildren; k++ ) {
+          if( cypherAstIsType(pElement->apChildren[k], CYPHER_AST_LABELS) ) {
+            pLabels = pElement->apChildren[k];
+          } else if( cypherAstIsType(pElement->apChildren[k], CYPHER_AST_MAP) ) {
+            pProps = pElement->apChildren[k];
+          }
+        }
+
+        /* Check 3: Validate that all variables used in property expressions are defined */
+        if( pProps ) {
+          rc = validateExpressionVariables(pProps, pContext, apVars, nVars);
+          if( rc != SQLITE_OK ) {
+            goto cleanup;
+          }
+        }
+
+        if( !zVar ) continue; /* Skip unnamed nodes */
+
+        /* Check 1: Variable must not be already bound from previous clauses */
+        /* Exception: In relationship patterns like CREATE (a)-[:R]->(b), nodes can reference
+           existing variables without labels/properties (they're endpoints, not new creations) */
+        int isNodeReference = isRelationshipPattern && !pLabels && !pProps;
+
+        if( !isNodeReference ) {
+          for( k = 0; k < pContext->nVariables; k++ ) {
+            if( pContext->azVariables[k] &&
+                strcmp(pContext->azVariables[k], zVar) == 0 ) {
+              /* Variable is already bound - CREATE cannot redefine it */
+              pContext->zErrorMsg = sqlite3_mprintf(
+                "SyntaxError: VariableAlreadyBound - Variable `%s` already bound and cannot be redefined in CREATE",
+                zVar);
+              rc = CYPHER_ERROR_SEMANTIC_VARIABLE_REDEFINED;
+              goto cleanup;
+            }
+          }
+        }
+
+        /* Check 2: Within this CREATE pattern, same variable with different labels = error */
+        CreateVarInfo *pExisting = NULL;
+        for( k = 0; k < nVars; k++ ) {
+          if( strcmp(apVars[k]->zName, zVar) == 0 ) {
+            pExisting = apVars[k];
+            break;
+          }
+        }
+
+        if( pExisting ) {
+          /* Variable already used in this CREATE pattern */
+          /* Extract label from current occurrence */
+          const char *zLabel = NULL;
+          if( pLabels ) {
+            if( pLabels->nChildren > 0 ) {
+              zLabel = cypherAstGetValue(pLabels->apChildren[0]);
+            } else {
+              zLabel = cypherAstGetValue(pLabels);
+            }
+          }
+
+          /* Check if labels conflict */
+          if( zLabel && pExisting->nLabels > 0 ) {
+            /* Both occurrences have labels - check if they match */
+            int labelFound = 0;
+            for( k = 0; k < pExisting->nLabels; k++ ) {
+              if( strcmp(pExisting->azLabels[k], zLabel) == 0 ) {
+                labelFound = 1;
+                break;
+              }
+            }
+            if( !labelFound ) {
+              /* Different labels on same variable = error */
+              pContext->zErrorMsg = sqlite3_mprintf(
+                "SyntaxError: VariableAlreadyBound - Variable `%s` has conflicting labels in CREATE pattern (first: :%s, later: :%s)",
+                zVar, pExisting->azLabels[0], zLabel);
+              rc = CYPHER_ERROR_SEMANTIC_VARIABLE_REDEFINED;
+              goto cleanup;
+            }
+          } else if( zLabel || pExisting->nLabels > 0 ) {
+            /* One has label, one doesn't = error */
+            pContext->zErrorMsg = sqlite3_mprintf(
+              "SyntaxError: VariableAlreadyBound - Variable `%s` has inconsistent label usage in CREATE pattern",
+              zVar);
+            rc = CYPHER_ERROR_SEMANTIC_VARIABLE_REDEFINED;
+            goto cleanup;
+          }
+
+          /* Track properties */
+          if( pProps ) pExisting->hasProperties = 1;
+        } else {
+          /* First occurrence of this variable in CREATE pattern */
+          CreateVarInfo *pNew = createVarInfoCreate(zVar, pElement);
+          if( !pNew ) {
+            rc = SQLITE_NOMEM;
+            goto cleanup;
+          }
+
+          /* Extract and store label */
+          if( pLabels ) {
+            const char *zLabel = NULL;
+            if( pLabels->nChildren > 0 ) {
+              zLabel = cypherAstGetValue(pLabels->apChildren[0]);
+            } else {
+              zLabel = cypherAstGetValue(pLabels);
+            }
+            if( zLabel ) {
+              createVarInfoAddLabel(pNew, zLabel);
+            }
+          }
+
+          if( pProps ) pNew->hasProperties = 1;
+
+          /* Add to list */
+          CreateVarInfo **apNew = sqlite3_realloc(apVars, (nVars + 1) * sizeof(CreateVarInfo*));
+          if( !apNew ) {
+            createVarInfoDestroy(pNew);
+            rc = SQLITE_NOMEM;
+            goto cleanup;
+          }
+          apVars = apNew;
+          apVars[nVars] = pNew;
+          nVars++;
+        }
+      } else if( cypherAstIsType(pElement, CYPHER_AST_REL_PATTERN) ) {
+        /* Validate relationship patterns */
+        int iDirection = pElement->iFlags;
+
+        /* Check 4: Relationship must have a direction in CREATE (not undirected) */
+        /* iDirection: 0 = undirected, 1 = right arrow (->), -1 = left arrow (<-) */
+        if( iDirection == 0 ) {
+          pContext->zErrorMsg = sqlite3_mprintf(
+            "SyntaxError: RequiresDirectedRelationship - Only directed relationships are supported in CREATE");
+          rc = CYPHER_ERROR_SYNTAX_INVALID_PATTERN;
+          goto cleanup;
+        }
+
+        /* Check 5: Relationship variable cannot be already bound */
+        /* Get relationship variable name if present */
+        if( pElement->nChildren > 0 &&
+            cypherAstIsType(pElement->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+          const char *zRelVar = cypherAstGetValue(pElement->apChildren[0]);
+
+          /* Check if variable is already bound from previous clauses */
+          for( k = 0; k < pContext->nVariables; k++ ) {
+            if( pContext->azVariables[k] &&
+                strcmp(pContext->azVariables[k], zRelVar) == 0 ) {
+              pContext->zErrorMsg = sqlite3_mprintf(
+                "SyntaxError: VariableAlreadyBound - Variable `%s` already bound and cannot be redefined in CREATE",
+                zRelVar);
+              rc = CYPHER_ERROR_SEMANTIC_VARIABLE_REDEFINED;
+              goto cleanup;
+            }
+          }
+        }
+      }
+    }
+  }
+
+cleanup:
+  for( i = 0; i < nVars; i++ ) {
+    createVarInfoDestroy(apVars[i]);
+  }
+  sqlite3_free(apVars);
+  return rc;
+}
 
 static MergeClauseDetails *mergeClauseDetailsCreate(void) {
   MergeClauseDetails *pDetails = sqlite3_malloc(sizeof(MergeClauseDetails));
@@ -370,9 +686,9 @@ CypherPlanner *cypherPlannerCreate(sqlite3 *pDb, GraphVtab *pGraph) {
 
 void cypherPlannerDestroy(CypherPlanner *pPlanner) {
   int i;
-  
+
   if( !pPlanner ) return;
-  
+
   /* Free context */
   if( pPlanner->pContext ) {
     /* Free variable arrays */
@@ -381,64 +697,145 @@ void cypherPlannerDestroy(CypherPlanner *pPlanner) {
     }
     sqlite3_free(pPlanner->pContext->azVariables);
     sqlite3_free(pPlanner->pContext->apVarNodes);
-    
+
+    /* Free variable info array */
+    for( i = 0; i < pPlanner->pContext->nVariableInfo; i++ ) {
+      if( pPlanner->pContext->apVariableInfo[i] ) {
+        sqlite3_free(pPlanner->pContext->apVariableInfo[i]->zName);
+        sqlite3_free(pPlanner->pContext->apVariableInfo[i]);
+      }
+    }
+    sqlite3_free(pPlanner->pContext->apVariableInfo);
+
     /* Free index arrays */
     for( i = 0; i < pPlanner->pContext->nLabelIndexes; i++ ) {
       sqlite3_free(pPlanner->pContext->azLabelIndexes[i]);
     }
     sqlite3_free(pPlanner->pContext->azLabelIndexes);
-    
+
     for( i = 0; i < pPlanner->pContext->nPropertyIndexes; i++ ) {
       sqlite3_free(pPlanner->pContext->azPropertyIndexes[i]);
     }
     sqlite3_free(pPlanner->pContext->azPropertyIndexes);
-    
+
     sqlite3_free(pPlanner->pContext->zErrorMsg);
     sqlite3_free(pPlanner->pContext);
   }
-  
+
   /* Free plans */
   logicalPlanNodeDestroy(pPlanner->pLogicalPlan);
   physicalPlanNodeDestroy(pPlanner->pPhysicalPlan);
-  
+
   sqlite3_free(pPlanner->zErrorMsg);
   sqlite3_free(pPlanner);
 }
 
 /*
-** Add a variable to the planning context.
-** Returns SQLITE_OK on success, SQLITE_NOMEM on allocation failure.
+** Find variable info by name in the planning context.
+** Returns pointer to VariableInfo or NULL if not found.
 */
-static int planContextAddVariable(PlanContext *pContext, const char *zVar, LogicalPlanNode *pNode) {
+static VariableInfo *planContextFindVariable(PlanContext *pContext, const char *zVar) {
+  int i;
+  if( !pContext || !zVar ) return NULL;
+
+  for( i = 0; i < pContext->nVariableInfo; i++ ) {
+    if( pContext->apVariableInfo[i] &&
+        sqlite3_stricmp(pContext->apVariableInfo[i]->zName, zVar) == 0 ) {
+      return pContext->apVariableInfo[i];
+    }
+  }
+  return NULL;
+}
+
+/*
+** Add a variable to the planning context with type tracking.
+** Returns SQLITE_OK on success, error code on failure.
+** Sets error message in context if variable type conflict detected.
+*/
+static int planContextAddVariable(PlanContext *pContext, const char *zVar,
+                                  LogicalPlanNode *pNode, VariableType type) {
   char **azNew;
   LogicalPlanNode **apNew;
-  
+  VariableInfo **apInfoNew;
+  VariableInfo *pVarInfo;
+  VariableInfo *pExisting;
+
   if( !pContext || !zVar ) return SQLITE_MISUSE;
-  
+
+  /* Check for variable type conflicts */
+  pExisting = planContextFindVariable(pContext, zVar);
+  if( pExisting ) {
+    /* Variable already exists - check if types match */
+    if( pExisting->type != type ) {
+      const char *zExistingType =
+        (pExisting->type == VARIABLE_TYPE_NODE) ? "node" :
+        (pExisting->type == VARIABLE_TYPE_RELATIONSHIP) ? "relationship" : "path";
+      const char *zNewType =
+        (type == VARIABLE_TYPE_NODE) ? "node" :
+        (type == VARIABLE_TYPE_RELATIONSHIP) ? "relationship" : "path";
+
+      pContext->zErrorMsg = sqlite3_mprintf(
+        "Variable `%s` already declared as %s but used as %s",
+        zVar, zExistingType, zNewType
+      );
+      return CYPHER_ERROR_SEMANTIC_VARIABLE_TYPE_CONFLICT;
+    }
+    /* Same type - this is allowed (variable reuse) */
+    return SQLITE_OK;
+  }
+
   /* Resize arrays if needed */
   if( pContext->nVariables >= pContext->nVariablesAlloc ) {
     int nNew = pContext->nVariablesAlloc ? pContext->nVariablesAlloc * 2 : 8;
-    
+
     azNew = sqlite3_realloc(pContext->azVariables, nNew * sizeof(char*));
     if( !azNew ) return SQLITE_NOMEM;
     pContext->azVariables = azNew;
-    
+
     apNew = sqlite3_realloc(pContext->apVarNodes, nNew * sizeof(LogicalPlanNode*));
     if( !apNew ) return SQLITE_NOMEM;
     pContext->apVarNodes = apNew;
-    
+
     pContext->nVariablesAlloc = nNew;
   }
-  
-  /* Add variable */
-  pContext->azVariables[pContext->nVariables] = sqlite3_mprintf("%s", zVar);
-  pContext->apVarNodes[pContext->nVariables] = pNode;
-  
-  if( !pContext->azVariables[pContext->nVariables] ) {
+
+  /* Resize variable info array if needed */
+  if( pContext->nVariableInfo >= pContext->nVariableInfoAlloc ) {
+    int nNew = pContext->nVariableInfoAlloc ? pContext->nVariableInfoAlloc * 2 : 8;
+
+    apInfoNew = sqlite3_realloc(pContext->apVariableInfo, nNew * sizeof(VariableInfo*));
+    if( !apInfoNew ) return SQLITE_NOMEM;
+    pContext->apVariableInfo = apInfoNew;
+    pContext->nVariableInfoAlloc = nNew;
+  }
+
+  /* Create variable info */
+  pVarInfo = sqlite3_malloc(sizeof(VariableInfo));
+  if( !pVarInfo ) return SQLITE_NOMEM;
+
+  pVarInfo->zName = sqlite3_mprintf("%s", zVar);
+  if( !pVarInfo->zName ) {
+    sqlite3_free(pVarInfo);
     return SQLITE_NOMEM;
   }
-  
+  pVarInfo->type = type;
+  pVarInfo->pNode = pNode;
+  pVarInfo->iDefinitionLine = 0; /* TODO: Track line numbers from AST */
+
+  /* Add to both arrays */
+  pContext->azVariables[pContext->nVariables] = sqlite3_mprintf("%s", zVar);
+  pContext->apVarNodes[pContext->nVariables] = pNode;
+
+  if( !pContext->azVariables[pContext->nVariables] ) {
+    sqlite3_free(pVarInfo->zName);
+    sqlite3_free(pVarInfo);
+    return SQLITE_NOMEM;
+  }
+
+  pContext->apVariableInfo[pContext->nVariableInfo] = pVarInfo;
+  pContext->nVariableInfo++;
   pContext->nVariables++;
+
   return SQLITE_OK;
 }
 
@@ -452,18 +849,27 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
   LogicalPlanNode *pChild;
   const char *zAlias;
   int i;
-  
+
   if( !pAst ) return NULL;
-  
+
   switch( pAst->type ) {
     case CYPHER_AST_QUERY:
     case CYPHER_AST_SINGLE_QUERY:
       /* Compile children and combine them into a pipeline */
       if( pAst->nChildren > 0 ) {
         pLogical = compileAstNode(pAst->apChildren[0], pContext);
+        /* Check for errors after first child */
+        if( !pLogical && pContext->zErrorMsg ) {
+          return NULL;
+        }
 
         for( i = 1; i < pAst->nChildren; i++ ) {
           pChild = compileAstNode(pAst->apChildren[i], pContext);
+          /* Check for errors (including variable type conflicts) */
+          if( !pChild && pContext->zErrorMsg ) {
+            logicalPlanNodeDestroy(pLogical);
+            return NULL;
+          }
           if( pChild && pLogical ) {
             /* Build a pipeline: child consumes output from pLogical */
             /* For example: MATCH (n) RETURN n becomes PROJECTION <- SCAN */
@@ -477,14 +883,45 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
     case CYPHER_AST_MATCH:
       /* Compile MATCH clause */
       if( pAst->nChildren > 0 ) {
-        pLogical = compileAstNode(pAst->apChildren[0], pContext);
+        CypherAst *pPatternOrList = pAst->apChildren[0];
+
+        /* Check if we have multiple patterns (Cartesian product) */
+        if( cypherAstIsType(pPatternOrList, CYPHER_AST_PATTERN_LIST) ) {
+          /* Multiple patterns: MATCH (n), (m) - create Cartesian product */
+          if( pPatternOrList->nChildren > 0 ) {
+            /* Compile first pattern */
+            pLogical = compileAstNode(pPatternOrList->apChildren[0], pContext);
+
+            /* For each additional pattern, create a cross product (Cartesian join) */
+            for( i = 1; i < pPatternOrList->nChildren; i++ ) {
+              LogicalPlanNode *pNextPattern = compileAstNode(pPatternOrList->apChildren[i], pContext);
+              /* Check for errors (including variable type conflicts) */
+              if( !pNextPattern && pContext->zErrorMsg ) {
+                logicalPlanNodeDestroy(pLogical);
+                return NULL;
+              }
+              if( pNextPattern && pLogical ) {
+                /* Create Cartesian product node */
+                LogicalPlanNode *pCrossJoin = logicalPlanNodeCreate(LOGICAL_CARTESIAN_PRODUCT);
+                if( pCrossJoin ) {
+                  logicalPlanNodeAddChild(pCrossJoin, pLogical);
+                  logicalPlanNodeAddChild(pCrossJoin, pNextPattern);
+                  pLogical = pCrossJoin;
+                }
+              }
+            }
+          }
+        } else {
+          /* Single pattern */
+          pLogical = compileAstNode(pPatternOrList, pContext);
+        }
       }
       break;
       
     case CYPHER_AST_NODE_PATTERN:
       /* Node pattern becomes a scan operation */
       if( pAst->nChildren > 0 && cypherAstIsType(pAst->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
-        /* Named node: (alias) or (alias:Label) */
+        /* Named node: (alias) or (alias:Label) or (alias {props}) */
         zAlias = cypherAstGetValue(pAst->apChildren[0]);
 
         /* Check if this is a labeled node */
@@ -494,42 +931,191 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
           if( pLogical ) {
             logicalPlanNodeSetAlias(pLogical, zAlias);
 
-            /* Get first label - check both children and zValue */
-            if( pAst->apChildren[1]->nChildren > 0 ) {
-              const char *zLabel = cypherAstGetValue(pAst->apChildren[1]->apChildren[0]);
-              logicalPlanNodeSetLabel(pLogical, zLabel);
-            } else if( pAst->apChildren[1]->zValue ) {
-              /* Label might be stored directly in zValue instead of children */
-              logicalPlanNodeSetLabel(pLogical, pAst->apChildren[1]->zValue);
+            /* Get ALL labels - multiple labels require ALL to match */
+            CypherAst *pLabels = pAst->apChildren[1];
+            if( pLabels->nChildren > 0 ) {
+              /* For multiple labels, create JSON array */
+              char *zLabelsJson = sqlite3_mprintf("[");
+              for( int i = 0; i < pLabels->nChildren; i++ ) {
+                const char *zLabel = cypherAstGetValue(pLabels->apChildren[i]);
+                char *zTmp = sqlite3_mprintf("%s%s\"%w\"",
+                                            zLabelsJson,
+                                            i > 0 ? "," : "",
+                                            zLabel);
+                sqlite3_free(zLabelsJson);
+                zLabelsJson = zTmp;
+              }
+              char *zFinal = sqlite3_mprintf("%s]", zLabelsJson);
+              sqlite3_free(zLabelsJson);
+              logicalPlanNodeSetLabel(pLogical, zFinal);
+              sqlite3_free(zFinal);
+            } else if( pLabels->zValue ) {
+              /* Single label stored directly in zValue */
+              char *zLabelsJson = sqlite3_mprintf("[\"%w\"]", pLabels->zValue);
+              logicalPlanNodeSetLabel(pLogical, zLabelsJson);
+              sqlite3_free(zLabelsJson);
             }
 
             /* Add variable to context */
-            planContextAddVariable(pContext, zAlias, pLogical);
+            int rc = planContextAddVariable(pContext, zAlias, pLogical, VARIABLE_TYPE_NODE);
+            if( rc != SQLITE_OK ) {
+              /* Variable conflict or allocation failure */
+              logicalPlanNodeDestroy(pLogical);
+              return NULL;
+            }
           }
         } else {
           /* Full node scan */
           pLogical = logicalPlanNodeCreate(LOGICAL_NODE_SCAN);
           if( pLogical ) {
             logicalPlanNodeSetAlias(pLogical, zAlias);
-            planContextAddVariable(pContext, zAlias, pLogical);
+            int rc = planContextAddVariable(pContext, zAlias, pLogical, VARIABLE_TYPE_NODE);
+            if( rc != SQLITE_OK ) {
+              /* Variable conflict or allocation failure */
+              logicalPlanNodeDestroy(pLogical);
+              return NULL;
+            }
+          }
+        }
+
+        /* Check for inline property predicates in MATCH */
+        for( i = 0; i < pAst->nChildren; i++ ) {
+          if( cypherAstIsType(pAst->apChildren[i], CYPHER_AST_MAP) && pLogical ) {
+            CypherAst *pMap = pAst->apChildren[i];
+
+            /* Create property filters for each property in the map */
+            for( int j = 0; j < pMap->nChildren; j++ ) {
+              CypherAst *pPair = pMap->apChildren[j];
+              if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+
+              const char *zPropName = cypherAstGetValue(pPair);
+              const char *zPropValue = NULL;
+
+              if( pPair->nChildren > 0 ) {
+                zPropValue = cypherAstGetValue(pPair->apChildren[0]);
+              }
+
+              if( zPropName && zPropValue ) {
+                /* Create LOGICAL_PROPERTY_FILTER node */
+                LogicalPlanNode *pFilter = logicalPlanNodeCreate(LOGICAL_PROPERTY_FILTER);
+                if( pFilter ) {
+                  logicalPlanNodeSetAlias(pFilter, zAlias);
+                  logicalPlanNodeSetProperty(pFilter, zPropName);
+                  logicalPlanNodeSetValue(pFilter, zPropValue);
+                  pFilter->iFlags = 1; /* Equal operator */
+
+                  /* Chain: Filter -> Scan */
+                  logicalPlanNodeAddChild(pFilter, pLogical);
+                  pLogical = pFilter;
+                }
+              }
+            }
           }
         }
       } else if( pAst->nChildren > 0 && cypherAstIsType(pAst->apChildren[0], CYPHER_AST_LABELS) ) {
-        /* Anonymous labeled node: (:Label) */
+        /* Anonymous labeled node: (:Label) or (:A:B:C) */
         pLogical = logicalPlanNodeCreate(LOGICAL_LABEL_SCAN);
         if( pLogical ) {
-          /* Get label from first child */
+          /* Get ALL labels */
           CypherAst *pLabels = pAst->apChildren[0];
           if( pLabels->nChildren > 0 ) {
-            const char *zLabel = cypherAstGetValue(pLabels->apChildren[0]);
-            logicalPlanNodeSetLabel(pLogical, zLabel);
+            /* For multiple labels, create JSON array */
+            char *zLabelsJson = sqlite3_mprintf("[");
+            for( int i = 0; i < pLabels->nChildren; i++ ) {
+              const char *zLabel = cypherAstGetValue(pLabels->apChildren[i]);
+              char *zTmp = sqlite3_mprintf("%s%s\"%w\"",
+                                          zLabelsJson,
+                                          i > 0 ? "," : "",
+                                          zLabel);
+              sqlite3_free(zLabelsJson);
+              zLabelsJson = zTmp;
+            }
+            char *zFinal = sqlite3_mprintf("%s]", zLabelsJson);
+            sqlite3_free(zLabelsJson);
+            logicalPlanNodeSetLabel(pLogical, zFinal);
+            sqlite3_free(zFinal);
           } else if( pLabels->zValue ) {
-            logicalPlanNodeSetLabel(pLogical, pLabels->zValue);
+            /* Single label */
+            char *zLabelsJson = sqlite3_mprintf("[\"%w\"]", pLabels->zValue);
+            logicalPlanNodeSetLabel(pLogical, zLabelsJson);
+            sqlite3_free(zLabelsJson);
+          }
+        }
+
+        /* Check for inline property predicates in anonymous node */
+        for( i = 0; i < pAst->nChildren; i++ ) {
+          if( cypherAstIsType(pAst->apChildren[i], CYPHER_AST_MAP) && pLogical ) {
+            CypherAst *pMap = pAst->apChildren[i];
+
+            /* Create property filters for each property in the map */
+            for( int j = 0; j < pMap->nChildren; j++ ) {
+              CypherAst *pPair = pMap->apChildren[j];
+              if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+
+              const char *zPropName = cypherAstGetValue(pPair);
+              const char *zPropValue = NULL;
+
+              if( pPair->nChildren > 0 ) {
+                zPropValue = cypherAstGetValue(pPair->apChildren[0]);
+              }
+
+              if( zPropName && zPropValue ) {
+                /* Create LOGICAL_PROPERTY_FILTER node */
+                LogicalPlanNode *pFilter = logicalPlanNodeCreate(LOGICAL_PROPERTY_FILTER);
+                if( pFilter ) {
+                  /* Use a generated anonymous variable name */
+                  logicalPlanNodeSetAlias(pFilter, "_anon_0");
+                  logicalPlanNodeSetProperty(pFilter, zPropName);
+                  logicalPlanNodeSetValue(pFilter, zPropValue);
+                  pFilter->iFlags = 1; /* Equal operator */
+
+                  /* Chain: Filter -> Scan */
+                  logicalPlanNodeAddChild(pFilter, pLogical);
+                  pLogical = pFilter;
+                }
+              }
+            }
           }
         }
       } else if( pAst->nChildren == 0 ) {
         /* Anonymous unlabeled node: () */
         pLogical = logicalPlanNodeCreate(LOGICAL_NODE_SCAN);
+      } else if( pAst->nChildren > 0 && cypherAstIsType(pAst->apChildren[0], CYPHER_AST_MAP) ) {
+        /* Anonymous node with only properties: ({prop: value}) */
+        pLogical = logicalPlanNodeCreate(LOGICAL_NODE_SCAN);
+
+        if( pLogical ) {
+          CypherAst *pMap = pAst->apChildren[0];
+
+          /* Create property filters for each property in the map */
+          for( int j = 0; j < pMap->nChildren; j++ ) {
+            CypherAst *pPair = pMap->apChildren[j];
+            if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+
+            const char *zPropName = cypherAstGetValue(pPair);
+            const char *zPropValue = NULL;
+
+            if( pPair->nChildren > 0 ) {
+              zPropValue = cypherAstGetValue(pPair->apChildren[0]);
+            }
+
+            if( zPropName && zPropValue ) {
+              /* Create LOGICAL_PROPERTY_FILTER node */
+              LogicalPlanNode *pFilter = logicalPlanNodeCreate(LOGICAL_PROPERTY_FILTER);
+              if( pFilter ) {
+                /* Use a generated anonymous variable name */
+                logicalPlanNodeSetAlias(pFilter, "_anon_0");
+                logicalPlanNodeSetProperty(pFilter, zPropName);
+                logicalPlanNodeSetValue(pFilter, zPropValue);
+                pFilter->iFlags = 1; /* Equal operator */
+
+                /* Chain: Filter -> Scan */
+                logicalPlanNodeAddChild(pFilter, pLogical);
+                pLogical = pFilter;
+              }
+            }
+          }
+        }
       }
       break;
       
@@ -719,6 +1305,34 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       /* Return NULL since this should be processed in context */
       break;
 
+    case CYPHER_AST_PATH:
+      /* Path binding: p = pattern
+       * Structure: PATH node with two children:
+       *   [0] = IDENTIFIER (path variable name)
+       *   [1] = PATTERN (the actual pattern)
+       */
+      if( pAst->nChildren >= 2 &&
+          cypherAstIsType(pAst->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+        const char *zPathVar = cypherAstGetValue(pAst->apChildren[0]);
+
+        /* First, compile the pattern */
+        pLogical = compileAstNode(pAst->apChildren[1], pContext);
+        if( !pLogical ) {
+          return NULL;
+        }
+
+        /* Register the path variable with type tracking */
+        if( zPathVar ) {
+          int rc = planContextAddVariable(pContext, zPathVar, pLogical, VARIABLE_TYPE_PATH);
+          if( rc != SQLITE_OK ) {
+            /* Variable conflict - error message already set in context */
+            logicalPlanNodeDestroy(pLogical);
+            return NULL;
+          }
+        }
+      }
+      break;
+
     case CYPHER_AST_PATTERN:
       /* Pattern becomes a sequence of node/relationship matches */
       /* Handle pattern elements: (a)-[r]->(b) has children [NODE, REL, NODE] */
@@ -749,9 +1363,16 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
                 }
               }
 
-              /* Store relationship variable in zLabel */
+              /* Store relationship variable in zLabel and track in context */
               if( zVarName ) {
                 logicalPlanNodeSetLabel(pExpand, zVarName);
+                /* Register relationship variable in symbol table */
+                int rc = planContextAddVariable(pContext, zVarName, pExpand, VARIABLE_TYPE_RELATIONSHIP);
+                if( rc != SQLITE_OK ) {
+                  /* Variable conflict or allocation failure */
+                  logicalPlanNodeDestroy(pExpand);
+                  return NULL;
+                }
               }
 
               /* Store relationship type in zProperty */
@@ -779,6 +1400,14 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
                     if( zTargetAlias ) {
                       logicalPlanNodeSetAlias(pExpand, zTargetAlias);
                       logicalPlanNodeSetAlias(pTargetLogical, zTargetAlias);
+                      /* Register target node variable in symbol table */
+                      int rc = planContextAddVariable(pContext, zTargetAlias, pTargetLogical, VARIABLE_TYPE_NODE);
+                      if( rc != SQLITE_OK ) {
+                        /* Variable conflict or allocation failure */
+                        logicalPlanNodeDestroy(pTargetLogical);
+                        logicalPlanNodeDestroy(pExpand);
+                        return NULL;
+                      }
                     }
                   }
 
@@ -846,6 +1475,14 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
         /* Store variable name in zLabel (for relationship variable) */
         if( zVarName ) {
           logicalPlanNodeSetLabel(pLogical, zVarName);
+
+          /* Register relationship variable with type tracking */
+          int rc = planContextAddVariable(pContext, zVarName, pLogical, VARIABLE_TYPE_RELATIONSHIP);
+          if( rc != SQLITE_OK ) {
+            /* Variable conflict or allocation failure */
+            logicalPlanNodeDestroy(pLogical);
+            return NULL;
+          }
         }
 
         /* Store relationship type in zProperty */
@@ -882,7 +1519,17 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
         CypherAst *pPattern = pAst->apChildren[0];
 
         /* Store pattern AST in pExtra - iterator will process it */
-        if( cypherAstIsType(pPattern, CYPHER_AST_PATTERN) ) {
+        /* Handle both single patterns and pattern lists (CREATE (), ()) */
+        if( cypherAstIsType(pPattern, CYPHER_AST_PATTERN) ||
+            cypherAstIsType(pPattern, CYPHER_AST_PATTERN_LIST) ) {
+
+          /* Validate pattern for variable binding conflicts */
+          int rcValidate = validateCreatePattern(pPattern, pContext);
+          if( rcValidate != SQLITE_OK ) {
+            logicalPlanNodeDestroy(pLogical);
+            return NULL;
+          }
+
           pLogical->pExtra = pPattern;
 
           /* For simple single-node case, extract info to main fields too */
@@ -895,7 +1542,12 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
               if( zAlias ) {
                 logicalPlanNodeSetAlias(pLogical, zAlias);
                 /* Register variable in symbol table */
-                planContextAddVariable(pContext, zAlias, pLogical);
+                int rc = planContextAddVariable(pContext, zAlias, pLogical, VARIABLE_TYPE_NODE);
+                if( rc != SQLITE_OK ) {
+                  /* Variable conflict or allocation failure */
+                  logicalPlanNodeDestroy(pLogical);
+                  return NULL;
+                }
               }
             }
 
@@ -1167,14 +1819,14 @@ int cypherPlannerCompile(CypherPlanner *pPlanner, CypherAst *pAst) {
   pRoot = compileAstNode(pAst, pPlanner->pContext);
   if( !pRoot ) {
     if( pPlanner->pContext->zErrorMsg ) {
-      pPlanner->zErrorMsg = sqlite3_mprintf("Compilation failed: %s", 
+      pPlanner->zErrorMsg = sqlite3_mprintf("Compilation failed: %s",
                                            pPlanner->pContext->zErrorMsg);
     } else {
       pPlanner->zErrorMsg = sqlite3_mprintf("Failed to compile AST to logical plan");
     }
     return SQLITE_ERROR;
   }
-  
+
   pPlanner->pLogicalPlan = pRoot;
   
   /* Estimate costs */

@@ -129,6 +129,7 @@ const char *cypherAstNodeTypeName(CypherAstNodeType type) {
     case CYPHER_AST_LIMIT:           return "LIMIT";
     case CYPHER_AST_SKIP:            return "SKIP";
     case CYPHER_AST_PATTERN:         return "PATTERN";
+    case CYPHER_AST_PATTERN_LIST:    return "PATTERN_LIST";
     case CYPHER_AST_NODE_PATTERN:    return "NODE_PATTERN";
     case CYPHER_AST_REL_PATTERN:     return "REL_PATTERN";
     case CYPHER_AST_LABELS:          return "LABELS";

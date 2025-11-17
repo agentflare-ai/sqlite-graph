@@ -78,21 +78,21 @@ static CypherIterator *createIteratorTree(PhysicalPlanNode *pPlan, ExecutionCont
 
 int cypherExecutorPrepare(CypherExecutor *pExecutor, PhysicalPlanNode *pPlan) {
   if( !pExecutor || !pPlan ) return SQLITE_MISUSE;
-  
+
   /* Clean up any previous iterator */
   cypherIteratorDestroy(pExecutor->pRootIterator);
   pExecutor->pRootIterator = NULL;
-  
+
   /* Store plan reference */
   pExecutor->pPlan = pPlan;
-  
+
   /* Create iterator tree from physical plan */
   pExecutor->pRootIterator = createIteratorTree(pPlan, pExecutor->pContext);
   if( !pExecutor->pRootIterator ) {
     pExecutor->zErrorMsg = sqlite3_mprintf("Failed to create iterator tree");
     return SQLITE_ERROR;
   }
-  
+
   return SQLITE_OK;
 }
 
@@ -292,13 +292,22 @@ cleanup:
   if( pPlanner && pPlanner->pContext ) {
     pPlanner->pContext->pAst = NULL;
   }
+
+  /* If we don't have an error message yet, check planner for errors */
+  if( !zResults && pPlanner ) {
+    const char *zPlannerError = cypherPlannerGetError(pPlanner);
+    if( zPlannerError ) {
+      zResults = sqlite3_mprintf("ERROR: %s", zPlannerError);
+    }
+  }
+
   cypherPlannerDestroy(pPlanner);
   cypherParserDestroy(pParser);
-  
+
   if( !zResults ) {
     zResults = sqlite3_mprintf("ERROR: Query execution failed");
   }
-  
+
   return zResults;
 }
 

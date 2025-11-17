@@ -183,3 +183,6 @@ docs/.doctrees/
 *.pdf
 
 *.c.*
+.claude/
+.agents/
+.tck/

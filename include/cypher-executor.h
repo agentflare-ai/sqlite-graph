@@ -416,6 +416,13 @@ char *cypherValueToJson(const CypherValue *pValue);
 CypherResult *cypherResultCreate(void);
 
 /*
+** Clear the contents of a result row (for stack-allocated results).
+** Frees column names and values but does NOT free the pResult struct itself.
+** Safe to call with NULL pointer.
+*/
+void cypherResultClear(CypherResult *pResult);
+
+/*
 ** Destroy a result row and free all associated memory.
 ** Safe to call with NULL pointer.
 */

@@ -265,42 +265,84 @@ static CypherAst *parseSingleQuery(CypherLexer *pLexer, CypherParser *pParser) {
     CypherAst *pSingleQuery = cypherAstCreate(CYPHER_AST_SINGLE_QUERY, 0, 0);
     CypherAst *pClause = NULL;
 
-    /* Parse the first clause - can be MATCH, CREATE, MERGE, SET, or DELETE */
-    CypherToken *pPeek = parserPeekToken(pLexer);
+    /* Parse clauses in a loop to support multiple MATCH clauses */
+    while (1) {
+        CypherToken *pPeek = parserPeekToken(pLexer);
 
-    if (pPeek->type == CYPHER_TOK_MATCH) {
-        pClause = parseMatchClause(pLexer, pParser);
-    } else if (pPeek->type == CYPHER_TOK_CREATE) {
-        pClause = parseCreateClause(pLexer, pParser);
-    } else if (pPeek->type == CYPHER_TOK_MERGE) {
-        pClause = parseMergeClause(pLexer, pParser);
-    } else if (pPeek->type == CYPHER_TOK_SET) {
-        pClause = parseSetClause(pLexer, pParser);
-    } else if (pPeek->type == CYPHER_TOK_DELETE) {
-        pClause = parseDeleteClause(pLexer, pParser);
-    } else {
-        parserSetError(pParser, pLexer, "Expected MATCH, CREATE, MERGE, SET, or DELETE");
-        cypherAstDestroy(pSingleQuery);
-        return NULL;
-    }
+        /* Parse reading clauses (can appear multiple times) */
+        if (pPeek->type == CYPHER_TOK_MATCH) {
+            pClause = parseMatchClause(pLexer, pParser);
+            if (!pClause) {
+                cypherAstDestroy(pSingleQuery);
+                return NULL;
+            }
+            cypherAstAddChild(pSingleQuery, pClause);
 
-    if (!pClause) {
-        cypherAstDestroy(pSingleQuery);
-        return NULL;
-    }
-    cypherAstAddChild(pSingleQuery, pClause);
-
-    /* Parse optional WHERE clause (only valid after MATCH) */
-    pPeek = parserPeekToken(pLexer);
-    if (pPeek->type == CYPHER_TOK_WHERE) {
-        CypherAst *pWhereClause = parseWhereClause(pLexer, pParser);
-        if (pWhereClause) {
-            cypherAstAddChild(pSingleQuery, pWhereClause);
+            /* Parse optional WHERE clause after MATCH */
+            pPeek = parserPeekToken(pLexer);
+            if (pPeek->type == CYPHER_TOK_WHERE) {
+                CypherAst *pWhereClause = parseWhereClause(pLexer, pParser);
+                if (pWhereClause) {
+                    cypherAstAddChild(pSingleQuery, pWhereClause);
+                }
+            }
+            /* Continue to check for more clauses */
+            continue;
         }
+
+        /* Parse updating clauses (CREATE can appear multiple times) */
+        if (pPeek->type == CYPHER_TOK_CREATE) {
+            pClause = parseCreateClause(pLexer, pParser);
+            if (!pClause) {
+                cypherAstDestroy(pSingleQuery);
+                return NULL;
+            }
+            cypherAstAddChild(pSingleQuery, pClause);
+            /* Continue to check for more clauses (allow multiple CREATE) */
+            continue;
+        } else if (pPeek->type == CYPHER_TOK_MERGE) {
+            pClause = parseMergeClause(pLexer, pParser);
+        } else if (pPeek->type == CYPHER_TOK_SET) {
+            pClause = parseSetClause(pLexer, pParser);
+        } else if (pPeek->type == CYPHER_TOK_DELETE) {
+            pClause = parseDeleteClause(pLexer, pParser);
+        } else if (pPeek->type == CYPHER_TOK_RETURN) {
+            /* RETURN marks the end of clause parsing */
+            break;
+        } else if (pPeek->type == CYPHER_TOK_EOF) {
+            /* No more clauses */
+            break;
+        } else {
+            /* First clause must be a valid clause type */
+            if (pSingleQuery->nChildren == 0) {
+                parserSetError(pParser, pLexer, "Expected MATCH, CREATE, MERGE, SET, or DELETE");
+                cypherAstDestroy(pSingleQuery);
+                return NULL;
+            }
+            /* Otherwise, we've finished parsing clauses */
+            break;
+        }
+
+        if (!pClause) {
+            cypherAstDestroy(pSingleQuery);
+            return NULL;
+        }
+        cypherAstAddChild(pSingleQuery, pClause);
+
+        /* After non-CREATE updating clauses, we stop looking for more clauses
+         * (only MATCH and CREATE can appear multiple times in sequence) */
+        break;
+    }
+
+    /* Ensure we parsed at least one clause */
+    if (pSingleQuery->nChildren == 0) {
+        parserSetError(pParser, pLexer, "Expected at least one clause");
+        cypherAstDestroy(pSingleQuery);
+        return NULL;
     }
 
     /* Parse optional RETURN clause */
-    pPeek = parserPeekToken(pLexer);
+    CypherToken *pPeek = parserPeekToken(pLexer);
     if (pPeek->type == CYPHER_TOK_RETURN) {
         CypherAst *pReturnClause = parseReturnClause(pLexer, pParser);
         if (!pReturnClause) {
@@ -612,19 +654,89 @@ static CypherAst *parseDeleteClause(CypherLexer *pLexer, CypherParser *pParser) 
 }
 
 static CypherAst *parsePatternList(CypherLexer *pLexer, CypherParser *pParser) {
-    /* Just call parsePattern - it already creates the PATTERN wrapper */
+    /* Parse first pattern */
     CypherAst *pPattern = parsePattern(pLexer, pParser);
     if (!pPattern) {
         return NULL;
     }
+
+    /* Check for comma-separated patterns: (n), (m), (o) */
+    CypherToken *pComma = parserPeekToken(pLexer);
+    if (pComma && pComma->type == CYPHER_TOK_COMMA) {
+        /* Multiple patterns - create a PATTERN_LIST wrapper */
+        CypherAst *pPatternList = cypherAstCreate(CYPHER_AST_PATTERN_LIST, 0, 0);
+        cypherAstAddChild(pPatternList, pPattern);
+
+        while (pComma && pComma->type == CYPHER_TOK_COMMA) {
+            parserConsumeToken(pLexer, CYPHER_TOK_COMMA);
+
+            /* Parse next pattern */
+            CypherAst *pNextPattern = parsePattern(pLexer, pParser);
+            if (!pNextPattern) {
+                cypherAstDestroy(pPatternList);
+                return NULL;
+            }
+            cypherAstAddChild(pPatternList, pNextPattern);
+
+            pComma = parserPeekToken(pLexer);
+        }
+
+        return pPatternList;
+    }
+
+    /* Single pattern - return as-is */
     return pPattern;
 }
 
 static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser) {
+    /* Check for path binding syntax: p = pattern */
+    CypherToken *pFirst = parserPeekToken(pLexer);
+    CypherToken *pSecond = NULL;
+    CypherAst *pPathIdentifier = NULL;
+
+    if (pFirst && pFirst->type == CYPHER_TOK_IDENTIFIER) {
+        /* Peek ahead to check if this is path binding (identifier = pattern) */
+        /* Save the first identifier info before we consume it */
+        char *zFirstIdText = sqlite3_mprintf("%.*s", pFirst->len, pFirst->text);
+        int iFirstIdLine = pFirst->line;
+        int iFirstIdCol = pFirst->column;
+
+        /* Save state before first peek */
+        int iSavedPos = pLexer->iPos;
+        int iSavedLine = pLexer->iLine;
+        int iSavedCol = pLexer->iColumn;
+
+        /* Consume the identifier to peek at the next token */
+        cypherLexerNextToken(pLexer);
+        pSecond = parserPeekToken(pLexer);
+
+        /* Restore lexer state */
+        pLexer->iPos = iSavedPos;
+        pLexer->iLine = iSavedLine;
+        pLexer->iColumn = iSavedCol;
+
+        if (pSecond && pSecond->type == CYPHER_TOK_EQ) {
+            /* This is path binding: p = pattern */
+            /* Now actually consume the identifier and '=' */
+            parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+            parserConsumeToken(pLexer, CYPHER_TOK_EQ);
+            if (zFirstIdText) {
+                pPathIdentifier = cypherAstCreateIdentifier(zFirstIdText, iFirstIdLine, iFirstIdCol);
+                sqlite3_free(zFirstIdText);
+            }
+        } else {
+            /* Not path binding, leave tokens unconsumed for parseNodePattern */
+            sqlite3_free(zFirstIdText);
+        }
+    }
+
     CypherAst *pPattern = cypherAstCreate(CYPHER_AST_PATTERN, 0, 0);
     CypherAst *pNodePattern = parseNodePattern(pLexer, pParser);
     if (!pNodePattern) {
         cypherAstDestroy(pPattern);
+        if (pPathIdentifier) {
+            cypherAstDestroy(pPathIdentifier);
+        }
         return NULL;
     }
     cypherAstAddChild(pPattern, pNodePattern);
@@ -727,8 +839,8 @@ static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser) {
             } else {
                 iDirection = 1;
             }
-        } else if (iDirection == 0) {
-            /* Consume trailing dash if no arrow */
+        } else if (iDirection == 0 || iDirection == -1) {
+            /* Consume trailing dash if no right arrow (for undirected or left-arrow patterns) */
             parserConsumeToken(pLexer, CYPHER_TOK_DASH);
         }
 
@@ -748,6 +860,14 @@ static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser) {
 
         /* Check for more relationships */
         pNext = parserPeekToken(pLexer);
+    }
+
+    /* If we have a path identifier, wrap the pattern in a PATH node */
+    if (pPathIdentifier) {
+        CypherAst *pPath = cypherAstCreate(CYPHER_AST_PATH, pPathIdentifier->iLine, pPathIdentifier->iColumn);
+        cypherAstAddChild(pPath, pPathIdentifier);  /* First child: path variable name */
+        cypherAstAddChild(pPath, pPattern);          /* Second child: the pattern */
+        return pPath;
     }
 
     return pPattern;
@@ -802,24 +922,51 @@ static CypherAst *parseNodeLabels(CypherLexer *pLexer, CypherParser *pParser) {
     if (!pColon || pColon->type != CYPHER_TOK_COLON) {
         return NULL;
     }
-    parserConsumeToken(pLexer, CYPHER_TOK_COLON);
 
-    CypherToken *pLabel = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
-    if (!pLabel) {
-        parserSetError(pParser, pLexer, "Expected node label after ':'");
+    /* Create LABELS node to hold multiple labels */
+    CypherAst *pLabels = cypherAstCreate(CYPHER_AST_LABELS, pColon->line, pColon->column);
+
+    /* Parse all labels separated by colons: :A:B:C */
+    while (1) {
+        pColon = parserPeekToken(pLexer);
+        if (!pColon || pColon->type != CYPHER_TOK_COLON) {
+            break;
+        }
+        parserConsumeToken(pLexer, CYPHER_TOK_COLON);
+
+        CypherToken *pLabel = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+        if (!pLabel) {
+            parserSetError(pParser, pLexer, "Expected node label after ':'");
+            cypherAstDestroy(pLabels);
+            return NULL;
+        }
+
+        /* Create null-terminated copy of label text using token length */
+        char *zLabel = sqlite3_mprintf("%.*s", pLabel->len, pLabel->text);
+        if (!zLabel) {
+            parserSetError(pParser, pLexer, "Out of memory");
+            cypherAstDestroy(pLabels);
+            return NULL;
+        }
+
+        CypherAst *pLabelNode = cypherAstCreateNodeLabel(zLabel, pLabel->line, pLabel->column);
+        sqlite3_free(zLabel);
+
+        if (!pLabelNode) {
+            cypherAstDestroy(pLabels);
+            return NULL;
+        }
+
+        cypherAstAddChild(pLabels, pLabelNode);
+    }
+
+    /* Must have at least one label */
+    if (pLabels->nChildren == 0) {
+        cypherAstDestroy(pLabels);
         return NULL;
     }
 
-    /* Create null-terminated copy of label text using token length */
-    char *zLabel = sqlite3_mprintf("%.*s", pLabel->len, pLabel->text);
-    if (!zLabel) {
-        parserSetError(pParser, pLexer, "Out of memory");
-        return NULL;
-    }
-
-    CypherAst *pAst = cypherAstCreateNodeLabel(zLabel, pLabel->line, pLabel->column);
-    sqlite3_free(zLabel);
-    return pAst;
+    return pLabels;
 }
 
 static CypherAst *parsePropertyMap(CypherLexer *pLexer, CypherParser *pParser) {
