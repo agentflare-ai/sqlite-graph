@@ -196,6 +196,7 @@ Check that regular CI still works:
 2. Verify recent runs show the new workflow with vendor setup
 3. Check that builds complete successfully
 
+
 ## Python Graph Harness
 
 Python-based MERGE and CLI-free experiments can now rely on `tests/python_support/graph_extension.py`.
@@ -321,6 +322,7 @@ Future improvements for automated testing:
 4. Automate artifact verification
 5. Add smoke tests for downloaded binaries
 
+
 ## Cypher MERGE Testing Status
 
 ### Phase 05.1 - Basic MERGE (Completed)
@@ -424,3 +426,4 @@ Unit test coverage provides comprehensive validation for ON MATCH and ON CREATE 
 4. Implement TCK scenarios Merge3.* and Merge4.* in Phase 06
 5. Add error handling tests for undefined variables
 6. Test complex MERGE patterns with multiple nodes/relationships
+
