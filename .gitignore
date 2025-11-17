@@ -186,3 +186,4 @@ docs/.doctrees/
 .claude/
 .agents/
 .tck/
+tck/
