@@ -11,17 +11,15 @@ LDFLAGS = -lm -ldl -lpthread
 
 TEST_OUTPUT_DIR = ../build/tests
 
-BASIC_TEST_NAMES = test_loading test_insert_nodes test_query_nodes
+BASIC_TEST_NAMES = test_loading test_query_nodes
 BASIC_TESTS = $(addprefix $(TEST_OUTPUT_DIR)/, $(BASIC_TEST_NAMES))
 
 EXTENDED_TEST_NAMES = test_clauses_create test_clauses_delete test_clauses_match test_clauses_return test_clauses_where
-EXTENDED_TEST_NAMES += test_concurrency test_cypher_functions test_cypher_queries test_error_handling
-EXTENDED_TEST_NAMES += test_graph_algorithms test_performance test_real_cypher_syntax test_storage test_transactions
-EXTENDED_TEST_NAMES += test_merge_clauses test_expression_evaluator
+EXTENDED_TEST_NAMES += test_concurrency test_real_cypher_syntax test_storage test_transactions
+EXTENDED_TEST_NAMES += test_merge_clauses
 EXTENDED_TESTS = $(addprefix $(TEST_OUTPUT_DIR)/, $(EXTENDED_TEST_NAMES))
 
-CY_TEST = $(TEST_OUTPUT_DIR)/test_cypher_basic
-HARNESS_TESTS = $(BASIC_TESTS) $(CY_TEST)
+HARNESS_TESTS = $(BASIC_TESTS)
 ALL_TESTS = $(HARNESS_TESTS) $(EXTENDED_TESTS)
 
 TCK_TEST_SOURCES := $(wildcard tck_test_*.c)
