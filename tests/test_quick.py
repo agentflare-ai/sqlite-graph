@@ -3,7 +3,7 @@ import sqlite3
 
 conn = sqlite3.connect(':memory:')
 conn.enable_load_extension(True)
-conn.load_extension('./build/libgraph.dylib')
+conn.load_extension('./build/libgraph')
 print("✅ Extension loaded")
 
 conn.execute("CREATE VIRTUAL TABLE graph USING graph()")
