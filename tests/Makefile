@@ -10,7 +10,7 @@ GRAPH_LIB = ../build/libgraph_static.a
 LDFLAGS = -lm -ldl -lpthread -Wl,--export-dynamic
 
 # Basic tests - only include tests that actually exist
-BASIC_TESTS = test_match_return_simple test_storage test_virtual_table_crud test_performance
+BASIC_TESTS = test_match_return_simple test_storage test_virtual_table_crud test_performance test_cypher_execute_before_table
 EXTENDED_TESTS =  # None exist yet
 
 ALL_TESTS = $(BASIC_TESTS) $(EXTENDED_TESTS)

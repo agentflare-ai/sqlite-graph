@@ -71,6 +71,15 @@ static void cypherExecuteSqlFunc(
     return;
   }
   
+  /* Check if graph virtual table is initialized */
+  if( !pGraph ) {
+    sqlite3_result_error(context, 
+      "Graph virtual table not initialized. Create a graph table first using: "
+      "CREATE VIRTUAL TABLE graph USING graph();", -1);
+    cypherParserDestroy(pParser);
+    return;
+  }
+  
   /* Plan the query */
   pPlanner = cypherPlannerCreate(sqlite3_context_db_handle(context), pGraph);
   if( !pPlanner ) {
