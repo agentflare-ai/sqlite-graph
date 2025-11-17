@@ -73,9 +73,9 @@ void setUp(void) {
     // Load graph extension
     // Determine path based on current working directory
 #ifdef __APPLE__
-    const char *lib_path = "build/libgraph";  // sqlite3 appends .dylib on macOS
+    const char *lib_path = "../build/libgraph";  // sqlite3 appends .dylib on macOS
 #else
-    const char *lib_path = "build/libgraph";  // sqlite3 appends .so on Linux
+    const char *lib_path = "../build/libgraph";  // sqlite3 appends .so on Linux
 #endif
     rc = sqlite3_load_extension(db, lib_path, "sqlite3_graph_init", &error_msg);
     if (rc != SQLITE_OK) {
