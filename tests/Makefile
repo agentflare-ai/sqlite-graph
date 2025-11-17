@@ -7,13 +7,11 @@ UNITY_LIB = ../build/libunity.a
 SQLITE_LIB = ../build/libsqlite3.a
 GRAPH_LIB = ../build/libgraph_static.a
 
-LDFLAGS = -lm -ldl -lpthread
+LDFLAGS = -lm -ldl -lpthread -Wl,--export-dynamic
 
-# Basic tests that need to be fixed
-BASIC_TESTS = test_loading test_insert_nodes test_query_nodes
-EXTENDED_TESTS = test_clauses_create test_clauses_delete test_clauses_match test_clauses_return test_clauses_where
-EXTENDED_TESTS += test_concurrency test_cypher_functions test_cypher_queries test_error_handling
-EXTENDED_TESTS += test_graph_algorithms test_performance test_real_cypher_syntax test_storage test_transactions
+# Basic tests - only include tests that actually exist
+BASIC_TESTS = test_match_return_simple test_storage test_virtual_table_crud test_performance test_cypher_execute_before_table
+EXTENDED_TESTS =  # None exist yet
 
 ALL_TESTS = $(BASIC_TESTS) $(EXTENDED_TESTS)
 
