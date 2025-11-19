@@ -21,6 +21,7 @@ typedef enum {
     // Keywords
     CYPHER_TOK_MATCH,
     CYPHER_TOK_OPTIONAL,
+    CYPHER_TOK_ON,
     CYPHER_TOK_WHERE,
     CYPHER_TOK_RETURN,
     CYPHER_TOK_CREATE,
@@ -143,6 +144,7 @@ typedef enum {
     CYPHER_AST_LIMIT,
     CYPHER_AST_SKIP,
     CYPHER_AST_PATTERN,
+    CYPHER_AST_PATTERN_LIST,
     CYPHER_AST_NODE_PATTERN,
     CYPHER_AST_REL_PATTERN,
     CYPHER_AST_LABELS,
@@ -177,11 +179,14 @@ typedef enum {
     CYPHER_AST_REGEX,
 
     // Mutation clauses
+    CYPHER_AST_ON_CREATE,
+    CYPHER_AST_ON_MATCH,
     CYPHER_AST_CREATE,
     CYPHER_AST_MERGE,
     CYPHER_AST_SET,
     CYPHER_AST_DELETE,
     CYPHER_AST_REMOVE,
+    CYPHER_AST_WITH,
 
     CYPHER_AST_COUNT // Sentinel for max AST node type
 } CypherAstNodeType;
@@ -196,7 +201,14 @@ struct CypherAst {
     int iLine; // Line number from source
     int iColumn; // Column number from source
     int iFlags; // General purpose flags (e.g., DISTINCT for RETURN clause)
+
+    // Variable-length relationship fields (for CYPHER_AST_REL_PATTERN)
+    int iMinHops; // Minimum hops for variable-length relationships (0 for fixed-length)
+    int iMaxHops; // Maximum hops for variable-length relationships (0 for fixed-length)
 };
+
+// AST iFlags values for relationship patterns
+#define REL_PATTERN_VARLEN 0x0100  // Indicates variable-length relationship pattern
 
 // AST Node creation functions
 CypherAst *cypherAstCreate(CypherAstNodeType type, int iLine, int iColumn);
@@ -228,6 +240,7 @@ const char *cypherAstNodeTypeName(CypherAstNodeType type);
 struct CypherParser {
     char *zErrorMsg;
     CypherAst *pAst;
+    int bInMergeClause;
 };
 
 // Parser Functions

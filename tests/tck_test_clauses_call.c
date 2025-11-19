@@ -43,195 +43,170 @@ void tearDown(void) {
 }
 
 void test_clauses_call_Call1_01(void) {
-    // Parse/validate test for: [1] Standalone call to procedure that takes no arguments and yields no results
+    // [1] Standalone call to procedure that takes no arguments and yields no results
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-01
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-01");
+    // Given: An empty graph and procedure test.doNothing() :: ()
+    // Query: CALL test.doNothing()
+    // Expected: Empty result, no side effects
 
+    // CALL clause for stored procedures is not yet implemented
+    // This test requires:
+    // 1. CALL statement parsing
+    // 2. Procedure registration/storage mechanism
+    // 3. Procedure invocation during execution
+
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_02(void) {
-    // Parse/validate test for: [2] Standalone call to procedure that takes no arguments and yields no results, called with implicit arguments
+    // [2] Standalone call to procedure that takes no arguments and yields no results, called with implicit arguments
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-02
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-02");
+    // Given: An empty graph and procedure test.doNothing() :: ()
+    // Query: CALL test.doNothing (without parentheses)
+    // Expected: Empty result, no side effects
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_03(void) {
-    // Parse/validate test for: [3] In-query call to procedure that takes no arguments and yields no results
+    // [3] In-query call to procedure that takes no arguments and yields no results
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-03
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-03");
+    // Given: An empty graph and procedure test.doNothing() :: ()
+    // Query: MATCH (n) CALL test.doNothing() RETURN n
+    // Expected: Empty result (no nodes exist)
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_04(void) {
-    // Parse/validate test for: [4] In-query call to procedure that takes no arguments and yields no results and consumes no rows
+    // [4] In-query call to procedure that takes no arguments and yields no results and consumes no rows
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-04
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-04");
+    // Given: Nodes A, B, C and procedure test.doNothing() :: ()
+    // Query: MATCH (n) CALL test.doNothing() RETURN n.name AS name
+    // Expected: Result with 3 rows: 'a', 'b', 'c'
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_05(void) {
-    // Parse/validate test for: [5] Standalone call to STRING procedure that takes no arguments
+    // [5] Standalone call to STRING procedure that takes no arguments
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-05
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-05");
+    // Given: Procedure test.labels() :: (label :: STRING?) that yields 'A', 'B', 'C'
+    // Query: CALL test.labels()
+    // Expected: Result with 3 rows in order: label='A', 'B', 'C'
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_06(void) {
-    // Parse/validate test for: [6] In-query call to STRING procedure that takes no arguments
+    // [6] In-query call to STRING procedure that takes no arguments
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-06
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-06");
+    // Given: Procedure test.labels() :: (label :: STRING?) that yields 'A', 'B', 'C'
+    // Query: CALL test.labels() YIELD label RETURN label
+    // Expected: Result with 3 rows in order: label='A', 'B', 'C'
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_07(void) {
-    // Parse/validate test for: [7] Standalone call to procedure should fail if explicit argument is missing
+    // [7] Standalone call to procedure should fail if explicit argument is missing
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-07
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-07");
+    // Given: Procedure test.my.proc(name :: STRING?, in :: INTEGER?) :: (out :: INTEGER?)
+    // Query: CALL test.my.proc('Dobby')  -- missing second argument
+    // Expected: SyntaxError: InvalidNumberOfArguments
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_08(void) {
-    // Parse/validate test for: [8] In-query call to procedure should fail if explicit argument is missing
+    // [8] In-query call to procedure should fail if explicit argument is missing
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-08
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-08");
+    // Given: Procedure test.my.proc(name :: STRING?, in :: INTEGER?) :: (out :: INTEGER?)
+    // Query: CALL test.my.proc('Dobby') YIELD out RETURN out  -- missing second argument
+    // Expected: SyntaxError: InvalidNumberOfArguments
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_09(void) {
-    // Parse/validate test for: [9] Standalone call to procedure should fail if too many explicit argument are given
+    // [9] Standalone call to procedure should fail if too many explicit argument are given
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-09
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-09");
+    // Given: Procedure test.my.proc(in :: INTEGER?) :: (out :: INTEGER?)
+    // Query: CALL test.my.proc(1, 2, 3, 4)  -- expects 1 argument, given 4
+    // Expected: SyntaxError: InvalidNumberOfArguments
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_10(void) {
-    // Parse/validate test for: [10] In-query call to procedure should fail if too many explicit argument are given
+    // [10] In-query call to procedure should fail if too many explicit argument are given
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-10
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-10");
+    // Given: Procedure test.my.proc(in :: INTEGER?) :: (out :: INTEGER?)
+    // Query: CALL test.my.proc(1, 2, 3, 4) YIELD out RETURN out  -- expects 1 argument, given 4
+    // Expected: SyntaxError: InvalidNumberOfArguments
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_11(void) {
-    // Parse/validate test for: [11] Standalone call to procedure should fail if implicit argument is missing
+    // [11] Standalone call to procedure should fail if implicit argument is missing
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-11
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-11");
+    // Given: Procedure test.my.proc(name :: STRING?, in :: INTEGER?) :: (out :: INTEGER?)
+    //        Parameters: name = 'Stefan'
+    // Query: CALL test.my.proc  -- called without parentheses, expects params to provide both args
+    // Expected: ParameterMissing: MissingParameter (parameter 'in' is missing)
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_12(void) {
-    // Parse/validate test for: [12] In-query call to procedure that has outputs fails if no outputs are yielded
+    // [12] In-query call to procedure that has outputs fails if no outputs are yielded
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-12
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-12");
+    // Given: Procedure test.my.proc(in :: INTEGER?) :: (out :: INTEGER?)
+    // Query: CALL test.my.proc(1) RETURN out  -- missing YIELD clause
+    // Expected: SyntaxError: UndefinedVariable (out is not defined without YIELD)
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_13(void) {
-    // Parse/validate test for: [13] Standalone call to unknown procedure should fail
+    // [13] Standalone call to unknown procedure should fail
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-13
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-13");
+    // Given: An empty graph (no procedures defined)
+    // Query: CALL test.my.proc
+    // Expected: ProcedureError: ProcedureNotFound
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_14(void) {
-    // Parse/validate test for: [14] In-query call to unknown procedure should fail
+    // [14] In-query call to unknown procedure should fail
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-14
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-14");
+    // Given: An empty graph (no procedures defined)
+    // Query: CALL test.my.proc() YIELD out RETURN out
+    // Expected: ProcedureError: ProcedureNotFound
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_15(void) {
-    // Parse/validate test for: [15] In-query procedure call should fail if shadowing an already bound variable
+    // [15] In-query procedure call should fail if shadowing an already bound variable
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-15
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-15");
+    // Given: Procedure test.labels() :: (label :: STRING?) that yields 'A', 'B', 'C'
+    // Query: WITH 'Hi' AS label CALL test.labels() YIELD label RETURN *
+    // Expected: SyntaxError: VariableAlreadyBound (label is already bound from WITH clause)
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call1_16(void) {
-    // Parse/validate test for: [16] In-query procedure call should fail if one of the argument expressions uses an aggregation function
+    // [16] In-query procedure call should fail if one of the argument expressions uses an aggregation function
     // Feature: Call1 - Basic procedure calling
-    
-    // TODO: Implement parsing/validation test for clauses-call-Call1-16
-    // This is a placeholder for syntax validation tests
-    
-    // For now, mark as pending implementation  
-    TEST_IGNORE_MESSAGE("TCK scenario implementation pending: clauses-call-Call1-16");
+    // Given: Procedure test.labels(in :: INTEGER?) :: (label :: STRING?)
+    // Query: MATCH (n) CALL test.labels(count(n)) YIELD label RETURN label
+    // Expected: SyntaxError: InvalidAggregation (cannot use aggregation in CALL arguments without grouping)
 
+    TEST_IGNORE_MESSAGE("CALL clause and stored procedures not yet implemented");
 }
 
 void test_clauses_call_Call2_01(void) {

@@ -59,6 +59,10 @@ struct CypherValue {
     char *zString;              /* String value (null-terminated) */
     sqlite3_int64 iNodeId;      /* Node ID reference */
     sqlite3_int64 iRelId;       /* Relationship ID reference */
+    struct {                    /* Relationship value with metadata */
+      sqlite3_int64 iRelId;
+      char *zType;              /* Relationship type (e.g., "KNOWS") */
+    } relationship;
     struct {                    /* List value */
       CypherValue *apValues;
       int nValues;
@@ -68,6 +72,13 @@ struct CypherValue {
       CypherValue *apValues;
       int nPairs;
     } map;
+    struct {                    /* Path value */
+      sqlite3_int64 *aiNodeIds; /* Array of node IDs in path */
+      sqlite3_int64 *aiRelIds;  /* Array of relationship IDs in path */
+      char **azRelTypes;        /* Array of relationship types */
+      int nNodes;               /* Number of nodes in path */
+      int nRels;                /* Number of relationships in path */
+    } path;
   } u;
 };
 
@@ -394,6 +405,13 @@ void cypherValueSetNode(CypherValue *pValue, sqlite3_int64 iNodeId);
 void cypherValueSetRelationship(CypherValue *pValue, sqlite3_int64 iRelId);
 
 /*
+** Set a CypherValue to a path.
+** Makes copies of the provided arrays.
+*/
+void cypherValueSetPath(CypherValue *pValue, sqlite3_int64 *aiNodeIds, int nNodes,
+                        sqlite3_int64 *aiRelIds, char **azRelTypes, int nRels);
+
+/*
 ** Parse JSON properties string and populate a CypherValue map.
 ** Returns SQLITE_OK on success, error code on failure.
 */
@@ -414,6 +432,13 @@ char *cypherValueToJson(const CypherValue *pValue);
 ** Returns NULL on allocation failure.
 */
 CypherResult *cypherResultCreate(void);
+
+/*
+** Clear the contents of a result row (for stack-allocated results).
+** Frees column names and values but does NOT free the pResult struct itself.
+** Safe to call with NULL pointer.
+*/
+void cypherResultClear(CypherResult *pResult);
 
 /*
 ** Destroy a result row and free all associated memory.

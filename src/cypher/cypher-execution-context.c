@@ -147,7 +147,11 @@ void cypherValueDestroy(CypherValue *pValue) {
     case CYPHER_VALUE_STRING:
       sqlite3_free(pValue->u.zString);
       break;
-      
+
+    case CYPHER_VALUE_RELATIONSHIP:
+      sqlite3_free(pValue->u.relationship.zType);
+      break;
+
     case CYPHER_VALUE_LIST:
       for( i = 0; i < pValue->u.list.nValues; i++ ) {
         cypherValueDestroy(&pValue->u.list.apValues[i]);
@@ -163,7 +167,18 @@ void cypherValueDestroy(CypherValue *pValue) {
       sqlite3_free(pValue->u.map.azKeys);
       sqlite3_free(pValue->u.map.apValues);
       break;
-      
+
+    case CYPHER_VALUE_PATH:
+      sqlite3_free(pValue->u.path.aiNodeIds);
+      sqlite3_free(pValue->u.path.aiRelIds);
+      if( pValue->u.path.azRelTypes ) {
+        for( i = 0; i < pValue->u.path.nRels; i++ ) {
+          sqlite3_free(pValue->u.path.azRelTypes[i]);
+        }
+        sqlite3_free(pValue->u.path.azRelTypes);
+      }
+      break;
+
     default:
       /* No additional cleanup needed for other types */
       break;
@@ -218,7 +233,15 @@ CypherValue *cypherValueCopy(CypherValue *pValue) {
       break;
       
     case CYPHER_VALUE_RELATIONSHIP:
-      pCopy->u.iRelId = pValue->u.iRelId;
+      pCopy->u.relationship.iRelId = pValue->u.relationship.iRelId;
+      if( pValue->u.relationship.zType ) {
+        pCopy->u.relationship.zType = sqlite3_mprintf("%s", pValue->u.relationship.zType);
+        if( !pCopy->u.relationship.zType ) {
+          cypherValueDestroy(pCopy);
+          sqlite3_free(pCopy);
+          return NULL;
+        }
+      }
       break;
       
     case CYPHER_VALUE_LIST:
@@ -229,7 +252,7 @@ CypherValue *cypherValueCopy(CypherValue *pValue) {
           sqlite3_free(pCopy);
           return NULL;
         }
-        
+
         pCopy->u.list.nValues = pValue->u.list.nValues;
         for( i = 0; i < pValue->u.list.nValues; i++ ) {
           CypherValue *pElementCopy = cypherValueCopy(&pValue->u.list.apValues[i]);
@@ -243,7 +266,53 @@ CypherValue *cypherValueCopy(CypherValue *pValue) {
         }
       }
       break;
-      
+
+    case CYPHER_VALUE_PATH:
+      pCopy->u.path.nNodes = pValue->u.path.nNodes;
+      pCopy->u.path.nRels = pValue->u.path.nRels;
+
+      /* Copy node IDs */
+      if( pValue->u.path.nNodes > 0 && pValue->u.path.aiNodeIds ) {
+        pCopy->u.path.aiNodeIds = sqlite3_malloc(pValue->u.path.nNodes * sizeof(sqlite3_int64));
+        if( !pCopy->u.path.aiNodeIds ) {
+          cypherValueDestroy(pCopy);
+          sqlite3_free(pCopy);
+          return NULL;
+        }
+        memcpy(pCopy->u.path.aiNodeIds, pValue->u.path.aiNodeIds,
+               pValue->u.path.nNodes * sizeof(sqlite3_int64));
+      }
+
+      /* Copy relationship IDs */
+      if( pValue->u.path.nRels > 0 && pValue->u.path.aiRelIds ) {
+        pCopy->u.path.aiRelIds = sqlite3_malloc(pValue->u.path.nRels * sizeof(sqlite3_int64));
+        if( !pCopy->u.path.aiRelIds ) {
+          cypherValueDestroy(pCopy);
+          sqlite3_free(pCopy);
+          return NULL;
+        }
+        memcpy(pCopy->u.path.aiRelIds, pValue->u.path.aiRelIds,
+               pValue->u.path.nRels * sizeof(sqlite3_int64));
+      }
+
+      /* Copy relationship types */
+      if( pValue->u.path.nRels > 0 && pValue->u.path.azRelTypes ) {
+        pCopy->u.path.azRelTypes = sqlite3_malloc(pValue->u.path.nRels * sizeof(char*));
+        if( !pCopy->u.path.azRelTypes ) {
+          cypherValueDestroy(pCopy);
+          sqlite3_free(pCopy);
+          return NULL;
+        }
+        for( i = 0; i < pValue->u.path.nRels; i++ ) {
+          if( pValue->u.path.azRelTypes[i] ) {
+            pCopy->u.path.azRelTypes[i] = sqlite3_mprintf("%s", pValue->u.path.azRelTypes[i]);
+          } else {
+            pCopy->u.path.azRelTypes[i] = NULL;
+          }
+        }
+      }
+      break;
+
     default:
       /* Unsupported type for copying */
       cypherValueDestroy(pCopy);
@@ -305,16 +374,53 @@ char *cypherValueToString(CypherValue *pValue) {
       return sqlite3_mprintf("Node(%lld)", pValue->u.iNodeId);
       
     case CYPHER_VALUE_RELATIONSHIP:
-      return sqlite3_mprintf("Relationship(%lld)", pValue->u.iRelId);
+      if (pValue->u.relationship.zType) {
+        return sqlite3_mprintf("Relationship(id=%lld,type=%s)",
+                             pValue->u.relationship.iRelId,
+                             pValue->u.relationship.zType);
+      } else {
+        return sqlite3_mprintf("Relationship(%lld)", pValue->u.relationship.iRelId);
+      }
       
     case CYPHER_VALUE_LIST:
       /* Simplified list representation */
       return sqlite3_mprintf("[List with %d elements]", pValue->u.list.nValues);
-      
+
     case CYPHER_VALUE_MAP:
       /* Simplified map representation */
       return sqlite3_mprintf("{Map with %d pairs}", pValue->u.map.nPairs);
-      
+
+    case CYPHER_VALUE_PATH: {
+      /* Serialize path as <(node1)-[rel1]->(node2)-...> */
+      char *zResult = sqlite3_mprintf("<");
+      if( !zResult ) return NULL;
+
+      for( int i = 0; i < pValue->u.path.nNodes; i++ ) {
+        /* Add node */
+        char *zNew = sqlite3_mprintf("%s()", zResult);
+        sqlite3_free(zResult);
+        if( !zNew ) return NULL;
+        zResult = zNew;
+
+        /* Add relationship if not the last node */
+        if( i < pValue->u.path.nRels ) {
+          if( pValue->u.path.azRelTypes && pValue->u.path.azRelTypes[i] ) {
+            zNew = sqlite3_mprintf("%s-[:%s]->", zResult, pValue->u.path.azRelTypes[i]);
+          } else {
+            zNew = sqlite3_mprintf("%s-[]->", zResult);
+          }
+          sqlite3_free(zResult);
+          if( !zNew ) return NULL;
+          zResult = zNew;
+        }
+      }
+
+      /* Close path representation */
+      char *zFinal = sqlite3_mprintf("%s>", zResult);
+      sqlite3_free(zResult);
+      return zFinal;
+    }
+
     default:
       return sqlite3_mprintf("Unknown(%d)", pValue->type);
   }
@@ -401,18 +507,34 @@ CypherResult *cypherResultCreate(void) {
 ** Destroy a result row and free all associated memory.
 ** Safe to call with NULL pointer.
 */
-void cypherResultDestroy(CypherResult *pResult) {
+/*
+** Clear the contents of a result row (for stack-allocated results).
+** Does NOT free the pResult struct itself.
+*/
+void cypherResultClear(CypherResult *pResult) {
   int i;
-  
+
   if( !pResult ) return;
-  
-  /* Free column names */
+
+  /* Free column names and values */
   for( i = 0; i < pResult->nColumns; i++ ) {
     sqlite3_free(pResult->azColumnNames[i]);
     cypherValueDestroy(&pResult->aValues[i]);
   }
   sqlite3_free(pResult->azColumnNames);
   sqlite3_free(pResult->aValues);
+
+  /* Reset to initial state */
+  pResult->azColumnNames = NULL;
+  pResult->aValues = NULL;
+  pResult->nColumns = 0;
+  pResult->nColumnsAlloc = 0;
+}
+
+void cypherResultDestroy(CypherResult *pResult) {
+  if( !pResult ) return;
+
+  cypherResultClear(pResult);
   sqlite3_free(pResult);
 }
 
@@ -453,7 +575,10 @@ int cypherResultAddColumn(CypherResult *pResult, const char *zName, CypherValue 
   }
 
   pResult->aValues[pResult->nColumns] = *pCopy;
-  sqlite3_free(pCopy);  /* Free the wrapper, value was copied by value */
+  /* Don't call cypherValueDestroy() on pCopy because we did a struct copy above.
+   * The pointers inside (zString, zType, etc.) are now owned by aValues[nColumns].
+   * Just free the wrapper itself. */
+  sqlite3_free(pCopy);
   pResult->nColumns++;
 
   return SQLITE_OK;
@@ -554,8 +679,8 @@ int cypherValueCompare(const CypherValue *pLeft, const CypherValue *pRight) {
       return 0;
       
     case CYPHER_VALUE_RELATIONSHIP:
-      if( pLeft->u.iRelId < pRight->u.iRelId ) return -1;
-      if( pLeft->u.iRelId > pRight->u.iRelId ) return 1;
+      if( pLeft->u.relationship.iRelId < pRight->u.relationship.iRelId ) return -1;
+      if( pLeft->u.relationship.iRelId > pRight->u.relationship.iRelId ) return 1;
       return 0;
       
     default:
@@ -630,7 +755,58 @@ void cypherValueSetRelationship(CypherValue *pValue, sqlite3_int64 iRelId) {
   if( pValue ) {
     cypherValueDestroy(pValue);
     pValue->type = CYPHER_VALUE_RELATIONSHIP;
-    pValue->u.iRelId = iRelId;
+    pValue->u.relationship.iRelId = iRelId;
+    pValue->u.relationship.zType = NULL;  /* Type not provided in this function */
+  }
+}
+
+/*
+** Set a CypherValue to a path.
+** Makes copies of the arrays.
+*/
+void cypherValueSetPath(CypherValue *pValue, sqlite3_int64 *aiNodeIds, int nNodes,
+                        sqlite3_int64 *aiRelIds, char **azRelTypes, int nRels) {
+  if( !pValue ) return;
+
+  cypherValueDestroy(pValue);
+  pValue->type = CYPHER_VALUE_PATH;
+  pValue->u.path.nNodes = nNodes;
+  pValue->u.path.nRels = nRels;
+
+  /* Copy node IDs */
+  if( nNodes > 0 && aiNodeIds ) {
+    pValue->u.path.aiNodeIds = sqlite3_malloc(nNodes * sizeof(sqlite3_int64));
+    if( pValue->u.path.aiNodeIds ) {
+      memcpy(pValue->u.path.aiNodeIds, aiNodeIds, nNodes * sizeof(sqlite3_int64));
+    }
+  } else {
+    pValue->u.path.aiNodeIds = NULL;
+  }
+
+  /* Copy relationship IDs */
+  if( nRels > 0 && aiRelIds ) {
+    pValue->u.path.aiRelIds = sqlite3_malloc(nRels * sizeof(sqlite3_int64));
+    if( pValue->u.path.aiRelIds ) {
+      memcpy(pValue->u.path.aiRelIds, aiRelIds, nRels * sizeof(sqlite3_int64));
+    }
+  } else {
+    pValue->u.path.aiRelIds = NULL;
+  }
+
+  /* Copy relationship types */
+  if( nRels > 0 && azRelTypes ) {
+    pValue->u.path.azRelTypes = sqlite3_malloc(nRels * sizeof(char*));
+    if( pValue->u.path.azRelTypes ) {
+      for( int i = 0; i < nRels; i++ ) {
+        if( azRelTypes[i] ) {
+          pValue->u.path.azRelTypes[i] = sqlite3_mprintf("%s", azRelTypes[i]);
+        } else {
+          pValue->u.path.azRelTypes[i] = NULL;
+        }
+      }
+    }
+  } else {
+    pValue->u.path.azRelTypes = NULL;
   }
 }
 

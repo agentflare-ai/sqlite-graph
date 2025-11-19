@@ -21,6 +21,7 @@
 typedef struct {
     CypherAst *pAst;
     char *zErrorMsg;
+    int bInMergeClause;
 } CypherParser;
 
 // Creates a new parser instance.

@@ -44,6 +44,7 @@ struct CypherWriteOp {
     sqlite3_int64 iFromId;            /* Source node ID (for relationship ops) */
     sqlite3_int64 iToId;              /* Target node ID (for relationship ops) */
     sqlite3_int64 iRelId;             /* Relationship ID */
+    unsigned char bMergeCreated;      /* MERGE outcome flag (1=create, 0=match) */
     char *zProperty;                  /* Property name */
     char *zLabel;                     /* Label name */
     char *zRelType;                   /* Relationship type */
@@ -58,6 +59,12 @@ struct CypherWriteOp {
 ** Write transaction context for managing mutations and rollback.
 ** Maintains operation log and provides transaction semantics.
 */
+typedef struct CypherStmtCache CypherStmtCache;
+struct CypherStmtCache {
+    sqlite3_stmt *pNodeExists;
+    sqlite3_stmt *pNodePayload;
+};
+
 typedef struct CypherWriteContext CypherWriteContext;
 struct CypherWriteContext {
     sqlite3 *pDb;                     /* Database connection */
@@ -71,6 +78,7 @@ struct CypherWriteContext {
     char *zErrorMsg;                  /* Error message */
     sqlite3_int64 iNextNodeId;        /* Next available node ID */
     sqlite3_int64 iNextRelId;         /* Next available relationship ID */
+    CypherStmtCache stmtCache;        /* Cached statements for hot paths */
 };
 
 /*
@@ -122,6 +130,28 @@ struct MergeNodeOp {
     int bWasCreated;                  /* Whether node was created (output) */
 };
 
+typedef struct MergeRelOp MergeRelOp;
+struct MergeRelOp {
+    MergeNodeOp *pFromNode;           /* Source node merge op */
+    MergeNodeOp *pToNode;             /* Target node merge op */
+    char *zRelVar;                    /* Relationship variable name */
+    char *zRelType;                   /* Relationship type to enforce */
+    int iDirection;                   /* Pattern direction hint (-1,0,1) */
+    char **azMatchProps;              /* Relationship match property names */
+    CypherValue **apMatchValues;      /* Relationship match property values */
+    int nMatchProps;                  /* Number of relationship match props */
+    char **azOnCreateProps;           /* Relationship ON CREATE props */
+    CypherValue **apOnCreateValues;   /* Relationship ON CREATE values */
+    int nOnCreateProps;               /* Count of ON CREATE entries */
+    char **azOnMatchProps;            /* Relationship ON MATCH props */
+    CypherValue **apOnMatchValues;    /* Relationship ON MATCH values */
+    int nOnMatchProps;                /* Count of ON MATCH entries */
+    sqlite3_int64 iRelId;             /* Matched/created relationship ID */
+    sqlite3_int64 iFromNodeId;        /* Final source node ID */
+    sqlite3_int64 iToNodeId;          /* Final target node ID */
+    int bWasCreated;                  /* Whether relationship created */
+};
+
 /*
 ** SET operation structures for property and label updates.
 */
@@ -131,6 +161,7 @@ struct SetPropertyOp {
     char *zProperty;                  /* Property name */
     CypherValue *pValue;              /* New value */
     sqlite3_int64 iNodeId;            /* Target node ID */
+    sqlite3_int64 iRelId;             /* Target relationship ID (if applicable) */
 };
 
 typedef struct SetLabelOp SetLabelOp;
@@ -271,6 +302,12 @@ CypherWriteIterator *cypherCreateRelIteratorCreate(CypherWriteContext *pCtx,
 int cypherMergeNode(CypherWriteContext *pCtx, MergeNodeOp *pOp);
 
 /*
+** Execute a MERGE relationship operation.
+** Returns SQLITE_OK on success, error code on failure.
+*/
+int cypherMergeRelationship(CypherWriteContext *pCtx, MergeRelOp *pOp);
+
+/*
 ** Create a MERGE node iterator.
 ** Returns NULL on allocation failure.
 */
@@ -333,6 +370,12 @@ CypherWriteIterator *cypherDeleteIteratorCreate(CypherWriteContext *pCtx,
 ** Returns SQLITE_OK if node exists, SQLITE_ERROR if not found.
 */
 int cypherValidateNodeExists(CypherWriteContext *pCtx, sqlite3_int64 iNodeId);
+
+/*
+** Validate that a relationship exists before updating.
+** Returns SQLITE_OK if relationship exists, SQLITE_ERROR if not found.
+*/
+int cypherValidateRelationshipExists(CypherWriteContext *pCtx, sqlite3_int64 iRelId);
 
 /*
 ** Check if a node matches the given labels and properties.
@@ -468,6 +511,12 @@ MergeNodeOp *cypherMergeNodeOpCreate(void);
 ** Safe to call with NULL pointer.
 */
 void cypherMergeNodeOpDestroy(MergeNodeOp *pOp);
+
+/*
+** Create/destroy MERGE relationship operation structures.
+*/
+MergeRelOp *cypherMergeRelOpCreate(void);
+void cypherMergeRelOpDestroy(MergeRelOp *pOp);
 
 /*
 ** Create a SET property operation structure.

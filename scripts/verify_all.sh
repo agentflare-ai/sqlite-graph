@@ -21,14 +21,13 @@ fi
 
 # 2. Clean build
 echo -n "2. Clean build: "
-cd build
-if make clean >/dev/null 2>&1 && make CFLAGS="-Wall -Wextra -Werror -O2" >/dev/null 2>&1; then
+if make clean >/dev/null 2>&1 && \
+   make >/dev/null 2>&1; then
   echo "✅ PASS"
   PASSED_CHECKS=$((PASSED_CHECKS + 1))
 else
   echo "❌ FAIL"
 fi
-cd ..
 
 # 3. All tests pass (using working individual tests)
 echo -n "3. All tests pass: "

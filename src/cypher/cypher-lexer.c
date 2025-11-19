@@ -172,6 +172,7 @@ static CypherTokenType cypherGetKeywordToken(const char *zKeyword, size_t len) {
             if (strncasecmp(zKeyword, "BY", 2) == 0) return CYPHER_TOK_BY;
             if (strncasecmp(zKeyword, "IS", 2) == 0) return CYPHER_TOK_IS_NULL; // Simplified
             if (strncasecmp(zKeyword, "IN", 2) == 0) return CYPHER_TOK_IN;
+            if (strncasecmp(zKeyword, "ON", 2) == 0) return CYPHER_TOK_ON;
             if (strncasecmp(zKeyword, "OR", 2) == 0) return CYPHER_TOK_OR;
             break;
         case 3:
@@ -229,7 +230,8 @@ static CypherToken *lexerTokenizeNumber(CypherLexer *pLexer) {
     while (isdigit(lexerPeek(pLexer, 0))) {
         lexerNext(pLexer);
     }
-    if (lexerPeek(pLexer, 0) == '.') {
+    /* Check for decimal point, but only if not followed by another dot (range operator ..) */
+    if (lexerPeek(pLexer, 0) == '.' && lexerPeek(pLexer, 1) != '.') {
         type = CYPHER_TOK_FLOAT;
         lexerNext(pLexer);
         while (isdigit(lexerPeek(pLexer, 0))) {
@@ -352,6 +354,7 @@ const char *cypherTokenTypeName(CypherTokenType type) {
         case CYPHER_TOK_COMMENT: return "COMMENT";
         case CYPHER_TOK_MATCH: return "MATCH";
         case CYPHER_TOK_OPTIONAL: return "OPTIONAL";
+        case CYPHER_TOK_ON: return "ON";
         case CYPHER_TOK_WHERE: return "WHERE";
         case CYPHER_TOK_RETURN: return "RETURN";
         case CYPHER_TOK_CREATE: return "CREATE";
