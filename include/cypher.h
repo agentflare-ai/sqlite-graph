@@ -186,6 +186,7 @@ typedef enum {
     CYPHER_AST_SET,
     CYPHER_AST_DELETE,
     CYPHER_AST_REMOVE,
+    CYPHER_AST_WITH,
 
     CYPHER_AST_COUNT // Sentinel for max AST node type
 } CypherAstNodeType;
@@ -200,7 +201,14 @@ struct CypherAst {
     int iLine; // Line number from source
     int iColumn; // Column number from source
     int iFlags; // General purpose flags (e.g., DISTINCT for RETURN clause)
+
+    // Variable-length relationship fields (for CYPHER_AST_REL_PATTERN)
+    int iMinHops; // Minimum hops for variable-length relationships (0 for fixed-length)
+    int iMaxHops; // Maximum hops for variable-length relationships (0 for fixed-length)
 };
+
+// AST iFlags values for relationship patterns
+#define REL_PATTERN_VARLEN 0x0100  // Indicates variable-length relationship pattern
 
 // AST Node creation functions
 CypherAst *cypherAstCreate(CypherAstNodeType type, int iLine, int iColumn);

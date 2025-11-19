@@ -230,7 +230,8 @@ static CypherToken *lexerTokenizeNumber(CypherLexer *pLexer) {
     while (isdigit(lexerPeek(pLexer, 0))) {
         lexerNext(pLexer);
     }
-    if (lexerPeek(pLexer, 0) == '.') {
+    /* Check for decimal point, but only if not followed by another dot (range operator ..) */
+    if (lexerPeek(pLexer, 0) == '.' && lexerPeek(pLexer, 1) != '.') {
         type = CYPHER_TOK_FLOAT;
         lexerNext(pLexer);
         while (isdigit(lexerPeek(pLexer, 0))) {

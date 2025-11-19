@@ -163,6 +163,7 @@ const char *cypherAstNodeTypeName(CypherAstNodeType type) {
     case CYPHER_AST_SET:             return "SET";
     case CYPHER_AST_DELETE:          return "DELETE";
     case CYPHER_AST_REMOVE:          return "REMOVE";
+    case CYPHER_AST_WITH:            return "WITH";
     case CYPHER_AST_COUNT:           return "COUNT";
     default:                         return "UNKNOWN";
   }

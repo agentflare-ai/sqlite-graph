@@ -200,6 +200,7 @@ physicalPlanNodeDestroy (PhysicalPlanNode *pNode)
   /* Free allocated memory */
   sqlite3_free (pNode->apChildren);
   sqlite3_free (pNode->zAlias);
+  sqlite3_free (pNode->zPathVar);
   sqlite3_free (pNode->zIndexName);
   sqlite3_free (pNode->zLabel);
   sqlite3_free (pNode->zProperty);
@@ -400,6 +401,16 @@ logicalPlanToPhysical (LogicalPlanNode *pLogical, PlanContext *pContext)
       pPhysical = physicalPlanNodeCreate (PHYSICAL_EXPAND);
       break;
 
+    case LOGICAL_VAR_LENGTH_EXPAND:
+      /* Variable-length relationship expansion/traversal */
+      pPhysical = physicalPlanNodeCreate (PHYSICAL_VAR_LENGTH_EXPAND);
+      if (pPhysical) {
+        /* Copy min/max hops from logical plan */
+        pPhysical->iMinHops = pLogical->iMinHops;
+        pPhysical->iMaxHops = pLogical->iMaxHops;
+      }
+      break;
+
     case LOGICAL_HASH_JOIN:
       pPhysical = physicalPlanNodeCreate (PHYSICAL_HASH_JOIN);
       break;
@@ -423,6 +434,31 @@ logicalPlanToPhysical (LogicalPlanNode *pLogical, PlanContext *pContext)
 
     case LOGICAL_PROJECTION:
       pPhysical = physicalPlanNodeCreate (PHYSICAL_PROJECTION);
+      if (pPhysical && pLogical->zAlias)
+        {
+          pPhysical->zAlias = sqlite3_mprintf ("%s", pLogical->zAlias);
+        }
+      if (pPhysical && pLogical->zValue)
+        {
+          pPhysical->zValue = sqlite3_mprintf ("%s", pLogical->zValue);
+        }
+      if (pPhysical && pLogical->zProperty)
+        {
+          pPhysical->zProperty = sqlite3_mprintf ("%s", pLogical->zProperty);
+        }
+      break;
+
+    case LOGICAL_WITH:
+      /* WITH clause maps to PHYSICAL_PROJECT - passes through variable bindings */
+      pPhysical = physicalPlanNodeCreate (PHYSICAL_PROJECTION);
+      if (pPhysical && pLogical->zAlias)
+        {
+          pPhysical->zAlias = sqlite3_mprintf ("%s", pLogical->zAlias);
+        }
+      if (pPhysical && pLogical->zValue)
+        {
+          pPhysical->zValue = sqlite3_mprintf ("%s", pLogical->zValue);
+        }
       if (pPhysical && pLogical->zProperty)
         {
           pPhysical->zProperty = sqlite3_mprintf ("%s", pLogical->zProperty);
@@ -517,6 +553,10 @@ logicalPlanToPhysical (LogicalPlanNode *pLogical, PlanContext *pContext)
   if (pLogical->zAlias)
     {
       pPhysical->zAlias = sqlite3_mprintf ("%s", pLogical->zAlias);
+    }
+  if (pLogical->zPathVar)
+    {
+      pPhysical->zPathVar = sqlite3_mprintf ("%s", pLogical->zPathVar);
     }
   if (pLogical->zLabel)
     {

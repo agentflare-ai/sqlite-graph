@@ -39,6 +39,7 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <limits.h>
 
 // Forward declarations for recursive descent parsing functions
 static CypherAst *parseQuery(CypherLexer *pLexer, CypherParser *pParser);
@@ -48,6 +49,7 @@ static CypherAst *parseCreateClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseMergeClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseSetClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseDeleteClause(CypherLexer *pLexer, CypherParser *pParser);
+static CypherAst *parseWithClause(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseMergeSetList(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parseMergePropertyTarget(CypherLexer *pLexer, CypherParser *pParser);
 static CypherAst *parsePatternList(CypherLexer *pLexer, CypherParser *pParser);
@@ -306,6 +308,16 @@ static CypherAst *parseSingleQuery(CypherLexer *pLexer, CypherParser *pParser) {
             pClause = parseSetClause(pLexer, pParser);
         } else if (pPeek->type == CYPHER_TOK_DELETE) {
             pClause = parseDeleteClause(pLexer, pParser);
+        } else if (pPeek->type == CYPHER_TOK_WITH) {
+            /* WITH clause - parse and continue */
+            pClause = parseWithClause(pLexer, pParser);
+            if (!pClause) {
+                cypherAstDestroy(pSingleQuery);
+                return NULL;
+            }
+            cypherAstAddChild(pSingleQuery, pClause);
+            /* After WITH, we can have more clauses */
+            continue;
         } else if (pPeek->type == CYPHER_TOK_RETURN) {
             /* RETURN marks the end of clause parsing */
             break;
@@ -767,70 +779,185 @@ static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser) {
             }
         }
 
-        /* Parse [r:TYPE {props}] or just [r] or [:TYPE] */
+        /* Parse [r:TYPE {props}] or just [r] or [:TYPE] or anonymous relationship -- or --> */
         CypherAst *pRelPattern = cypherAstCreate(CYPHER_AST_REL_PATTERN, 0, 0);
 
-        if (!parserConsumeToken(pLexer, CYPHER_TOK_LBRACKET)) {
-            cypherAstDestroy(pRelPattern);
-            parserSetError(pParser, pLexer, "Expected '[' after '-' in relationship pattern");
-            cypherAstDestroy(pPattern);
-            return NULL;
-        }
-
-        /* Optional: variable name */
+        /* Check if we have brackets (detailed relationship) or not (anonymous shorthand) */
         pNext = parserPeekToken(pLexer);
-        if (pNext && pNext->type == CYPHER_TOK_IDENTIFIER) {
-            CypherToken *pId = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
-            cypherAstAddChild(pRelPattern, cypherAstCreateIdentifier(pId->text, pId->line, pId->column));
-        }
+        int bHasBracket = 0;
+        if (pNext && pNext->type == CYPHER_TOK_LBRACKET) {
+            parserConsumeToken(pLexer, CYPHER_TOK_LBRACKET);
+            bHasBracket = 1;
 
-        /* Optional: relationship type :TYPE */
+            /* Optional: variable name */
+            pNext = parserPeekToken(pLexer);
+            if (pNext && pNext->type == CYPHER_TOK_IDENTIFIER) {
+                CypherToken *pId = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+                cypherAstAddChild(pRelPattern, cypherAstCreateIdentifier(pId->text, pId->line, pId->column));
+            }
+
+            /* Optional: relationship type :TYPE or :TYPE1|TYPE2|... */
+            pNext = parserPeekToken(pLexer);
+            if (pNext && pNext->type == CYPHER_TOK_COLON) {
+                parserConsumeToken(pLexer, CYPHER_TOK_COLON);
+                CypherToken *pType = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+                if (!pType) {
+                    cypherAstDestroy(pRelPattern);
+                    cypherAstDestroy(pPattern);
+                    parserSetError(pParser, pLexer, "Expected relationship type after ':'");
+                    return NULL;
+                }
+                /* Create a LABELS node to hold the type (reusing label infrastructure) */
+                CypherAst *pTypeNode = cypherAstCreate(CYPHER_AST_LABELS, pType->line, pType->column);
+                char *zType = sqlite3_mprintf("%.*s", pType->len, pType->text);
+
+                /* Check for additional types separated by | */
+                pNext = parserPeekToken(pLexer);
+                while (pNext && pNext->type == CYPHER_TOK_PIPE) {
+                    parserConsumeToken(pLexer, CYPHER_TOK_PIPE);
+                    CypherToken *pNextType = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+                    if (!pNextType) {
+                        sqlite3_free(zType);
+                        cypherAstDestroy(pTypeNode);
+                        cypherAstDestroy(pRelPattern);
+                        cypherAstDestroy(pPattern);
+                        parserSetError(pParser, pLexer, "Expected relationship type after '|'");
+                        return NULL;
+                    }
+                    /* Append to existing type string with | separator */
+                    char *zNewType = sqlite3_mprintf("%s|%.*s", zType, pNextType->len, pNextType->text);
+                    sqlite3_free(zType);
+                    zType = zNewType;
+                    pNext = parserPeekToken(pLexer);
+                }
+
+                cypherAstSetValue(pTypeNode, zType);
+                sqlite3_free(zType);
+                cypherAstAddChild(pRelPattern, pTypeNode);
+            }
+
+            /* Optional: properties {key: value} */
+            pNext = parserPeekToken(pLexer);
+            if (pNext && pNext->type == CYPHER_TOK_LBRACE) {
+                CypherAst *pProperties = parsePropertyMap(pLexer, pParser);
+                if (pProperties) {
+                    cypherAstAddChild(pRelPattern, pProperties);
+                } else if (pParser->zErrorMsg) {
+                    cypherAstDestroy(pRelPattern);
+                    cypherAstDestroy(pPattern);
+                    return NULL;
+                }
+            }
+        }
+        /* If no bracket, this is an anonymous relationship -- or --> or <-- */
+
+        /* Optional: variable-length pattern *[min..max] */
         pNext = parserPeekToken(pLexer);
-        if (pNext && pNext->type == CYPHER_TOK_COLON) {
-            parserConsumeToken(pLexer, CYPHER_TOK_COLON);
-            CypherToken *pType = parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
-            if (!pType) {
+        if (pNext && pNext->type == CYPHER_TOK_MULT) {
+            /* Check if in MERGE clause */
+            if (pParser && pParser->bInMergeClause) {
+                parserSetError(pParser, pLexer, "MERGE does not support variable-length relationships");
                 cypherAstDestroy(pRelPattern);
                 cypherAstDestroy(pPattern);
-                parserSetError(pParser, pLexer, "Expected relationship type after ':'");
                 return NULL;
             }
-            /* Create a LABELS node to hold the type (reusing label infrastructure) */
-            CypherAst *pTypeNode = cypherAstCreate(CYPHER_AST_LABELS, pType->line, pType->column);
-            char *zType = sqlite3_mprintf("%.*s", pType->len, pType->text);
-            cypherAstSetValue(pTypeNode, zType);
-            sqlite3_free(zType);
-            cypherAstAddChild(pRelPattern, pTypeNode);
-        }
 
-        /* Optional: properties {key: value} */
-        pNext = parserPeekToken(pLexer);
-        if (pNext && pNext->type == CYPHER_TOK_LBRACE) {
-            CypherAst *pProperties = parsePropertyMap(pLexer, pParser);
-            if (pProperties) {
-                cypherAstAddChild(pRelPattern, pProperties);
-            } else if (pParser->zErrorMsg) {
+            /* Consume * token */
+            parserConsumeToken(pLexer, CYPHER_TOK_MULT);
+
+            /* Default values for [*] */
+            int iMinHops = 1;
+            int iMaxHops = INT_MAX;
+
+            /* Check for range syntax */
+            pNext = parserPeekToken(pLexer);
+            if (pNext && pNext->type == CYPHER_TOK_INTEGER) {
+                /* Could be [*n] or [*min..max] */
+                CypherToken *pFirstNum = parserConsumeToken(pLexer, CYPHER_TOK_INTEGER);
+                int iFirstNum = atoi(pFirstNum->text);
+
+                pNext = parserPeekToken(pLexer);
+                if (pNext && pNext->type == CYPHER_TOK_DOT) {
+                    /* Check for .. (two dots) */
+                    parserConsumeToken(pLexer, CYPHER_TOK_DOT);
+                    pNext = parserPeekToken(pLexer);
+                    if (pNext && pNext->type == CYPHER_TOK_DOT) {
+                        /* [*min..max] or [*min..] */
+                        parserConsumeToken(pLexer, CYPHER_TOK_DOT);
+                        iMinHops = iFirstNum;
+
+                        pNext = parserPeekToken(pLexer);
+                        if (pNext && pNext->type == CYPHER_TOK_INTEGER) {
+                            CypherToken *pMaxNum = parserConsumeToken(pLexer, CYPHER_TOK_INTEGER);
+                            iMaxHops = atoi(pMaxNum->text);
+                        } else {
+                            /* [*min..] */
+                            iMaxHops = INT_MAX;
+                        }
+                    } else {
+                        /* Single dot followed by non-dot - error */
+                        parserSetError(pParser, pLexer, "Expected '..' for range in variable-length pattern");
+                        cypherAstDestroy(pRelPattern);
+                        cypherAstDestroy(pPattern);
+                        return NULL;
+                    }
+                } else {
+                    /* [*n] - fixed count */
+                    iMinHops = iFirstNum;
+                    iMaxHops = iFirstNum;
+                }
+            } else if (pNext && pNext->type == CYPHER_TOK_DOT) {
+                /* [*..max] */
+                parserConsumeToken(pLexer, CYPHER_TOK_DOT);
+                pNext = parserPeekToken(pLexer);
+                if (pNext && pNext->type == CYPHER_TOK_DOT) {
+                    parserConsumeToken(pLexer, CYPHER_TOK_DOT);
+                    iMinHops = 0;
+
+                    pNext = parserPeekToken(pLexer);
+                    if (pNext && pNext->type == CYPHER_TOK_INTEGER) {
+                        CypherToken *pMaxNum = parserConsumeToken(pLexer, CYPHER_TOK_INTEGER);
+                        iMaxHops = atoi(pMaxNum->text);
+                    } else {
+                        /* [*..] is equivalent to [*] */
+                        iMinHops = 1;
+                        iMaxHops = INT_MAX;
+                    }
+                } else {
+                    parserSetError(pParser, pLexer, "Expected '..' for range in variable-length pattern");
+                    cypherAstDestroy(pRelPattern);
+                    cypherAstDestroy(pPattern);
+                    return NULL;
+                }
+            }
+            /* else: [*] with default values */
+
+            /* Validate bounds */
+            if (iMinHops < 0 || iMaxHops < 0) {
+                parserSetError(pParser, pLexer, "Negative bounds not allowed in variable-length pattern");
                 cypherAstDestroy(pRelPattern);
                 cypherAstDestroy(pPattern);
                 return NULL;
             }
+
+            /* Store in AST */
+            pRelPattern->iMinHops = iMinHops;
+            pRelPattern->iMaxHops = iMaxHops;
+            pRelPattern->iFlags |= REL_PATTERN_VARLEN;
         }
 
-        if (!parserConsumeToken(pLexer, CYPHER_TOK_RBRACKET)) {
-            cypherAstDestroy(pRelPattern);
-            cypherAstDestroy(pPattern);
-            parserSetError(pParser, pLexer, "Expected ']' after relationship pattern");
-            return NULL;
+        /* Close bracket if we opened one */
+        if (bHasBracket) {
+            if (!parserConsumeToken(pLexer, CYPHER_TOK_RBRACKET)) {
+                cypherAstDestroy(pRelPattern);
+                cypherAstDestroy(pPattern);
+                parserSetError(pParser, pLexer, "Expected ']' after relationship pattern");
+                return NULL;
+            }
         }
 
         /* Check for right arrow */
         pNext = parserPeekToken(pLexer);
-        if (pNext && pNext->type == CYPHER_TOK_MULT && pParser && pParser->bInMergeClause) {
-            parserSetError(pParser, pLexer, "MERGE does not support variable-length relationships");
-            cypherAstDestroy(pRelPattern);
-            cypherAstDestroy(pPattern);
-            return NULL;
-        }
         if (pNext && pNext->type == CYPHER_TOK_ARROW_RIGHT) {
             parserConsumeToken(pLexer, CYPHER_TOK_ARROW_RIGHT);
             if (iDirection == -1) {
@@ -841,7 +968,11 @@ static CypherAst *parsePattern(CypherLexer *pLexer, CypherParser *pParser) {
             }
         } else if (iDirection == 0 || iDirection == -1) {
             /* Consume trailing dash if no right arrow (for undirected or left-arrow patterns) */
-            parserConsumeToken(pLexer, CYPHER_TOK_DASH);
+            /* Only consume dash if we're not looking at an arrow next */
+            pNext = parserPeekToken(pLexer);
+            if (pNext && pNext->type == CYPHER_TOK_DASH) {
+                parserConsumeToken(pLexer, CYPHER_TOK_DASH);
+            }
         }
 
         /* Store direction in flags */
@@ -1053,6 +1184,21 @@ static CypherAst *parseWhereClause(CypherLexer *pLexer, CypherParser *pParser) {
     return pWhereClause;
 }
 
+static CypherAst *parseWithClause(CypherLexer *pLexer, CypherParser *pParser) {
+    if (!parserConsumeToken(pLexer, CYPHER_TOK_WITH)) {
+        parserSetError(pParser, pLexer, "Expected WITH");
+        return NULL;
+    }
+    CypherAst *pWithClause = cypherAstCreate(CYPHER_AST_WITH, 0, 0);
+    CypherAst *pProjectionList = parseProjectionList(pLexer, pParser);
+    if (!pProjectionList) {
+        cypherAstDestroy(pWithClause);
+        return NULL;
+    }
+    cypherAstAddChild(pWithClause, pProjectionList);
+    return pWithClause;
+}
+
 static CypherAst *parseReturnClause(CypherLexer *pLexer, CypherParser *pParser) {
     if (!parserConsumeToken(pLexer, CYPHER_TOK_RETURN)) {
         parserSetError(pParser, pLexer, "Expected RETURN");
@@ -1087,6 +1233,22 @@ static CypherAst *parseProjectionItem(CypherLexer *pLexer, CypherParser *pParser
         return NULL;
     }
     cypherAstAddChild(pProjectionItem, pExpr);
+
+    // Check for optional AS alias
+    CypherToken *pToken = parserPeekToken(pLexer);
+    if (pToken->type == CYPHER_TOK_AS) {
+        parserConsumeToken(pLexer, CYPHER_TOK_AS);
+        pToken = parserPeekToken(pLexer);
+        if (pToken->type != CYPHER_TOK_IDENTIFIER) {
+            parserSetError(pParser, pLexer, "Expected identifier after AS");
+            cypherAstDestroy(pProjectionItem);
+            return NULL;
+        }
+        // Store the alias in the projection item's zValue
+        cypherAstSetValue(pProjectionItem, pToken->text);
+        parserConsumeToken(pLexer, CYPHER_TOK_IDENTIFIER);
+    }
+
     return pProjectionItem;
 }
 

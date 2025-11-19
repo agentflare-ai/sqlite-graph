@@ -10,6 +10,7 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <ctype.h>
 
 /* Forward declarations */
 // TODO: implement cost-based join ordering
@@ -506,8 +507,6 @@ static int mergeExtractMatchPropsFromNode(CypherAst *pNodeAst, MergeClauseDetail
     CypherAst *pChild = pNodeAst->apChildren[i];
     if( !cypherAstIsType(pChild, CYPHER_AST_MAP) ) continue;
 
-    fprintf(stderr, "DEBUG mergeExtractMatchPropsFromNode saw property map with %d entries\n", pChild->nChildren);
-
     int j;
     for( j = 0; j < pChild->nChildren; j++ ) {
       CypherAst *pPair = pChild->apChildren[j];
@@ -532,7 +531,6 @@ static int mergeExtractMatchPropsFromNode(CypherAst *pNodeAst, MergeClauseDetail
 
       rc = mergeDetailsAddMatchProp(pDetails, zKey, pValue);
       if( rc!=SQLITE_OK ) return mergePlannerOOM(pContext);
-      fprintf(stderr, "DEBUG added match prop %s count now %d\n", zKey ? zKey : "(null)", pDetails->nMatchProps);
     }
   }
 
@@ -748,6 +746,78 @@ static VariableInfo *planContextFindVariable(PlanContext *pContext, const char *
 }
 
 /*
+** Infer the VariableType from an AST expression node.
+** This is used to determine the type of literals in WITH clauses.
+*/
+static VariableType inferTypeFromExpression(CypherAst *pExpr) {
+  if (!pExpr) return VARIABLE_TYPE_ANY;
+
+  switch (pExpr->type) {
+    case CYPHER_AST_LITERAL: {
+      const char *zValue = cypherAstGetValue(pExpr);
+      if (!zValue) return VARIABLE_TYPE_NULL;
+
+      /* Check for boolean literals */
+      if (sqlite3_stricmp(zValue, "true") == 0 ||
+          sqlite3_stricmp(zValue, "false") == 0) {
+        return VARIABLE_TYPE_BOOLEAN;
+      }
+
+      /* Check for null */
+      if (sqlite3_stricmp(zValue, "null") == 0) {
+        return VARIABLE_TYPE_NULL;
+      }
+
+      /* Check if it's a number */
+      int bHasDot = 0;
+      int bIsNumber = 1;
+      const char *p = zValue;
+
+      /* Skip leading sign */
+      if (*p == '+' || *p == '-') p++;
+
+      /* Check each character */
+      if (!*p || !isdigit((unsigned char)*p)) {
+        bIsNumber = 0;
+      } else {
+        while (*p) {
+          if (*p == '.') {
+            if (bHasDot) {
+              bIsNumber = 0; /* Multiple dots - not a number */
+              break;
+            }
+            bHasDot = 1;
+          } else if (!isdigit((unsigned char)*p)) {
+            bIsNumber = 0;
+            break;
+          }
+          p++;
+        }
+      }
+
+      if (bIsNumber) {
+        return bHasDot ? VARIABLE_TYPE_FLOAT : VARIABLE_TYPE_INTEGER;
+      }
+
+      /* Otherwise it's a string */
+      return VARIABLE_TYPE_STRING;
+    }
+
+    case CYPHER_AST_LIST:
+    case CYPHER_AST_ARRAY:
+      return VARIABLE_TYPE_LIST;
+
+    case CYPHER_AST_MAP:
+    case CYPHER_AST_OBJECT:
+      return VARIABLE_TYPE_MAP;
+
+    default:
+      /* For other expression types (identifiers, properties, function calls, etc.) */
+      return VARIABLE_TYPE_ANY;
+  }
+}
+
+/*
 ** Add a variable to the planning context with type tracking.
 ** Returns SQLITE_OK on success, error code on failure.
 ** Sets error message in context if variable type conflict detected.
@@ -767,12 +837,37 @@ static int planContextAddVariable(PlanContext *pContext, const char *zVar,
   if( pExisting ) {
     /* Variable already exists - check if types match */
     if( pExisting->type != type ) {
-      const char *zExistingType =
-        (pExisting->type == VARIABLE_TYPE_NODE) ? "node" :
-        (pExisting->type == VARIABLE_TYPE_RELATIONSHIP) ? "relationship" : "path";
-      const char *zNewType =
-        (type == VARIABLE_TYPE_NODE) ? "node" :
-        (type == VARIABLE_TYPE_RELATIONSHIP) ? "relationship" : "path";
+      /* Convert variable types to human-readable names */
+      const char *zExistingType;
+      const char *zNewType;
+
+      switch (pExisting->type) {
+        case VARIABLE_TYPE_NODE: zExistingType = "node"; break;
+        case VARIABLE_TYPE_RELATIONSHIP: zExistingType = "relationship"; break;
+        case VARIABLE_TYPE_PATH: zExistingType = "path"; break;
+        case VARIABLE_TYPE_INTEGER: zExistingType = "integer"; break;
+        case VARIABLE_TYPE_FLOAT: zExistingType = "float"; break;
+        case VARIABLE_TYPE_STRING: zExistingType = "string"; break;
+        case VARIABLE_TYPE_BOOLEAN: zExistingType = "boolean"; break;
+        case VARIABLE_TYPE_NULL: zExistingType = "null"; break;
+        case VARIABLE_TYPE_LIST: zExistingType = "list"; break;
+        case VARIABLE_TYPE_MAP: zExistingType = "map"; break;
+        default: zExistingType = "unknown"; break;
+      }
+
+      switch (type) {
+        case VARIABLE_TYPE_NODE: zNewType = "node"; break;
+        case VARIABLE_TYPE_RELATIONSHIP: zNewType = "relationship"; break;
+        case VARIABLE_TYPE_PATH: zNewType = "path"; break;
+        case VARIABLE_TYPE_INTEGER: zNewType = "integer"; break;
+        case VARIABLE_TYPE_FLOAT: zNewType = "float"; break;
+        case VARIABLE_TYPE_STRING: zNewType = "string"; break;
+        case VARIABLE_TYPE_BOOLEAN: zNewType = "boolean"; break;
+        case VARIABLE_TYPE_NULL: zNewType = "null"; break;
+        case VARIABLE_TYPE_LIST: zNewType = "list"; break;
+        case VARIABLE_TYPE_MAP: zNewType = "map"; break;
+        default: zNewType = "unknown"; break;
+      }
 
       pContext->zErrorMsg = sqlite3_mprintf(
         "Variable `%s` already declared as %s but used as %s",
@@ -1183,8 +1278,86 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
               pItem->nChildren > 0 ) {
             CypherAst *pExpr = pItem->apChildren[0];
 
-            if( cypherAstIsType(pExpr, CYPHER_AST_IDENTIFIER) ) {
+            /* Check if projection item has an explicit alias (AS name) */
+            const char *zExplicitAlias = cypherAstGetValue(pItem);
+            if( zExplicitAlias ) {
+              /* Use the explicit alias from AS clause */
+              logicalPlanNodeSetAlias(pLogical, zExplicitAlias);
+              /* If the expression is a variable, store it so we know what to project */
+              if( cypherAstIsType(pExpr, CYPHER_AST_IDENTIFIER) ) {
+                logicalPlanNodeSetValue(pLogical, cypherAstGetValue(pExpr));
+              }
+            } else if( cypherAstIsType(pExpr, CYPHER_AST_IDENTIFIER) ) {
+              /* No explicit alias, use the variable name */
               logicalPlanNodeSetAlias(pLogical, cypherAstGetValue(pExpr));
+            } else if( cypherAstIsType(pExpr, CYPHER_AST_PROPERTY) &&
+                       pExpr->nChildren >= 2 ) {
+              const char *zVar = cypherAstGetValue(pExpr->apChildren[0]);
+              const char *zProp = cypherAstGetValue(pExpr->apChildren[1]);
+
+              logicalPlanNodeSetAlias(pLogical, zVar);
+              logicalPlanNodeSetProperty(pLogical, zProp);
+            }
+          }
+        }
+      }
+      break;
+
+    case CYPHER_AST_WITH:
+      /* WITH clause becomes a projection (variable forwarding) */
+      pLogical = logicalPlanNodeCreate(LOGICAL_WITH);
+      if( pLogical && pAst->nChildren > 0 ) {
+        /* Process projection list */
+        CypherAst *pProjList = pAst->apChildren[0];
+        if( cypherAstIsType(pProjList, CYPHER_AST_PROJECTION_LIST) &&
+            pProjList->nChildren > 0 ) {
+          CypherAst *pItem = pProjList->apChildren[0];
+          if( cypherAstIsType(pItem, CYPHER_AST_PROJECTION_ITEM) &&
+              pItem->nChildren > 0 ) {
+            CypherAst *pExpr = pItem->apChildren[0];
+
+            /* Check if projection item has an explicit alias (AS name) */
+            const char *zExplicitAlias = cypherAstGetValue(pItem);
+            if( zExplicitAlias ) {
+              /* Use the explicit alias from AS clause */
+              logicalPlanNodeSetAlias(pLogical, zExplicitAlias);
+              /* If the expression is a variable, store it so we know what to forward */
+              if( cypherAstIsType(pExpr, CYPHER_AST_IDENTIFIER) ) {
+                const char *zSourceVar = cypherAstGetValue(pExpr);
+                logicalPlanNodeSetValue(pLogical, zSourceVar);
+
+                /* Register the alias in the symbol table with the same type as source */
+                VariableInfo *pSourceInfo = planContextFindVariable(pContext, zSourceVar);
+                if( pSourceInfo ) {
+                  /* Register the alias with the same type */
+                  int rc = planContextAddVariable(pContext, zExplicitAlias, pLogical, pSourceInfo->type);
+                  (void)rc; /* Suppress unused variable warning */
+                }
+              } else {
+                /* Expression is a literal, list, map, or other expression - infer its type */
+                VariableType inferredType = inferTypeFromExpression(pExpr);
+
+                /* Register the alias with the inferred type */
+                int rc = planContextAddVariable(pContext, zExplicitAlias, pLogical, inferredType);
+                if( rc != SQLITE_OK ) {
+                  /* Propagate the error - this will catch type conflicts */
+                  if( rc == CYPHER_ERROR_SEMANTIC_VARIABLE_TYPE_CONFLICT ) {
+                    pContext->nErrors++;
+                  }
+                }
+              }
+            } else if( cypherAstIsType(pExpr, CYPHER_AST_IDENTIFIER) ) {
+              /* No explicit alias, use the variable name */
+              const char *zVarName = cypherAstGetValue(pExpr);
+              logicalPlanNodeSetAlias(pLogical, zVarName);
+
+              /* Register the variable in the symbol table with the same type as source */
+              VariableInfo *pSourceInfo = planContextFindVariable(pContext, zVarName);
+              if( pSourceInfo ) {
+                /* Register with the same type - this allows subsequent clauses to know the variable type */
+                int rc = planContextAddVariable(pContext, zVarName, pLogical, pSourceInfo->type);
+                (void)rc; /* Suppress unused variable warning */
+              }
             } else if( cypherAstIsType(pExpr, CYPHER_AST_PROPERTY) &&
                        pExpr->nChildren >= 2 ) {
               const char *zVar = cypherAstGetValue(pExpr->apChildren[0]);
@@ -1321,6 +1494,11 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
           return NULL;
         }
 
+        /* Store the path variable name in the logical plan */
+        if( zPathVar && pLogical ) {
+          pLogical->zPathVar = sqlite3_mprintf("%s", zPathVar);
+        }
+
         /* Register the path variable with type tracking */
         if( zPathVar ) {
           int rc = planContextAddVariable(pContext, zPathVar, pLogical, VARIABLE_TYPE_PATH);
@@ -1337,6 +1515,73 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       /* Pattern becomes a sequence of node/relationship matches */
       /* Handle pattern elements: (a)-[r]->(b) has children [NODE, REL, NODE] */
       if( pAst->nChildren > 0 ) {
+        /* Check if this is a simple pattern with a single bound relationship:
+         * Pattern: ()-[r]->() where r is already bound
+         * In this case, the pattern is just validating/using the bound variable,
+         * not generating new rows. We should skip pattern compilation and let
+         * the bound value flow through naturally.
+         */
+        if( pAst->nChildren == 3 ) {
+          /* Potential single-relationship pattern: NODE, REL, NODE */
+          CypherAst *pFirstNode = pAst->apChildren[0];
+          CypherAst *pRel = pAst->apChildren[1];
+          CypherAst *pLastNode = pAst->apChildren[2];
+
+          if( cypherAstIsType(pFirstNode, CYPHER_AST_NODE_PATTERN) &&
+              cypherAstIsType(pRel, CYPHER_AST_REL_PATTERN) &&
+              cypherAstIsType(pLastNode, CYPHER_AST_NODE_PATTERN) ) {
+
+            /* Check if nodes are anonymous (no named variable or just empty) */
+            int bFirstAnonymous = 1;
+            int bLastAnonymous = 1;
+
+            if( pFirstNode->nChildren > 0 &&
+                cypherAstIsType(pFirstNode->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+              const char *zFirstVar = cypherAstGetValue(pFirstNode->apChildren[0]);
+              if( zFirstVar && zFirstVar[0] != '\0' ) {
+                bFirstAnonymous = 0;
+              }
+            }
+
+            if( pLastNode->nChildren > 0 &&
+                cypherAstIsType(pLastNode->apChildren[0], CYPHER_AST_IDENTIFIER) ) {
+              const char *zLastVar = cypherAstGetValue(pLastNode->apChildren[0]);
+              if( zLastVar && zLastVar[0] != '\0' ) {
+                bLastAnonymous = 0;
+              }
+            }
+
+            /* If both nodes are anonymous, check if relationship is bound */
+            if( bFirstAnonymous && bLastAnonymous ) {
+              const char *zRelVar = NULL;
+
+              /* Extract relationship variable */
+              for( int j = 0; j < pRel->nChildren; j++ ) {
+                if( cypherAstIsType(pRel->apChildren[j], CYPHER_AST_IDENTIFIER) ) {
+                  zRelVar = cypherAstGetValue(pRel->apChildren[j]);
+                  break;
+                }
+              }
+
+              /* Check if relationship variable is bound */
+              if( zRelVar ) {
+                VariableInfo *pExistingVar = planContextFindVariable(pContext, zRelVar);
+
+                if( pExistingVar && pExistingVar->type == VARIABLE_TYPE_RELATIONSHIP ) {
+                  /* This is a fully-bound pattern: ()-[bound_var]->()
+                   * The relationship is already in context from a previous clause (e.g., WITH).
+                   * We don't need to create any new operators - the bound value will flow through.
+                   * Just return success without creating a plan node.
+                   */
+                  /* Return NULL to indicate no new plan node needed */
+                  pLogical = NULL;
+                  break;
+                }
+              }
+            }
+          }
+        }
+
         /* Start with first element (usually a node) */
         pLogical = compileAstNode(pAst->apChildren[0], pContext);
 
@@ -1346,7 +1591,22 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
 
           if( cypherAstIsType(pElement, CYPHER_AST_REL_PATTERN) ) {
             /* This is a relationship - create EXPAND with current plan as source */
-            LogicalPlanNode *pExpand = logicalPlanNodeCreate(LOGICAL_EXPAND);
+            /* Check if this is a variable-length relationship pattern */
+            LogicalPlanNode *pExpand;
+            /* Check for variable-length pattern using both flags AND hop values
+             * (flags can be corrupted, so use hop values as backup) */
+            int bIsVarLength = (pElement->iFlags & REL_PATTERN_VARLEN) ||
+                               (pElement->iMinHops > 0 || pElement->iMaxHops > 1);
+            if( bIsVarLength ) {
+              pExpand = logicalPlanNodeCreate(LOGICAL_VAR_LENGTH_EXPAND);
+              if( pExpand ) {
+                /* Store min/max hops for variable-length patterns */
+                pExpand->iMinHops = pElement->iMinHops;
+                pExpand->iMaxHops = pElement->iMaxHops;
+              }
+            } else {
+              pExpand = logicalPlanNodeCreate(LOGICAL_EXPAND);
+            }
             if( pExpand ) {
               /* Extract relationship variable and type */
               const char *zVarName = NULL;
@@ -1361,6 +1621,19 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
                     zRelType = pLabels->zValue;
                   }
                 }
+              }
+
+              /* Check if relationship variable is already bound */
+              VariableInfo *pExistingVar = NULL;
+              if( zVarName ) {
+                pExistingVar = planContextFindVariable(pContext, zVarName);
+              }
+
+              /* If variable is already bound as a relationship, mark EXPAND as bound */
+              if( pExistingVar && pExistingVar->type == VARIABLE_TYPE_RELATIONSHIP ) {
+                /* Set flag to indicate this relationship is bound (not a pattern match) */
+                /* Bit 0x01: relationship variable is bound from previous clause */
+                pExpand->iFlags |= 0x01;
               }
 
               /* Store relationship variable in zLabel and track in context */
@@ -1380,7 +1653,7 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
                 logicalPlanNodeSetProperty(pExpand, zRelType);
               }
 
-              /* Add source scan as child */
+              /* Add source scan as child of expand */
               if( pLogical ) {
                 logicalPlanNodeAddChild(pExpand, pLogical);
               }
@@ -1412,15 +1685,21 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
                   }
 
                   /* Extract target label - check for LABELS node in children */
+                  /* Also check if first child IS a LABELS node (for anonymous labeled nodes like (:X)) */
+                  int bFoundLabel = 0;
                   for( int k = 0; k < pTargetNode->nChildren; k++ ) {
                     if( cypherAstIsType(pTargetNode->apChildren[k], CYPHER_AST_LABELS) ) {
                       CypherAst *pLabels = pTargetNode->apChildren[k];
                       /* Check both children and zValue for label */
                       if( pLabels->nChildren > 0 ) {
                         const char *zLabel = cypherAstGetValue(pLabels->apChildren[0]);
-                        logicalPlanNodeSetLabel(pTargetLogical, zLabel);
+                        if( zLabel ) {
+                          logicalPlanNodeSetLabel(pTargetLogical, zLabel);
+                          bFoundLabel = 1;
+                        }
                       } else if( pLabels->zValue ) {
                         logicalPlanNodeSetLabel(pTargetLogical, pLabels->zValue);
+                        bFoundLabel = 1;
                       }
                       break;
                     }
@@ -1434,7 +1713,44 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
                 i++;
               }
 
-              pLogical = pExpand;
+              /* Check for inline property predicates in relationship pattern and wrap with filters */
+              LogicalPlanNode *pRelPlan = pExpand;
+              for( int j = 0; j < pElement->nChildren; j++ ) {
+                if( cypherAstIsType(pElement->apChildren[j], CYPHER_AST_MAP) ) {
+                  CypherAst *pMap = pElement->apChildren[j];
+
+                  /* Create property filters for each property in the map */
+                  for( int k = 0; k < pMap->nChildren; k++ ) {
+                    CypherAst *pPair = pMap->apChildren[k];
+                    if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+
+                    const char *zPropName = cypherAstGetValue(pPair);
+                    const char *zPropValue = NULL;
+
+                    if( pPair->nChildren > 0 ) {
+                      zPropValue = cypherAstGetValue(pPair->apChildren[0]);
+                    }
+
+                    if( zPropName && zPropValue && zVarName ) {
+                      /* Create LOGICAL_PROPERTY_FILTER node */
+                      LogicalPlanNode *pFilter = logicalPlanNodeCreate(LOGICAL_PROPERTY_FILTER);
+                      if( pFilter ) {
+                        /* Use the relationship variable name (e.g., 'r') */
+                        logicalPlanNodeSetAlias(pFilter, zVarName);
+                        logicalPlanNodeSetProperty(pFilter, zPropName);
+                        logicalPlanNodeSetValue(pFilter, zPropValue);
+                        pFilter->iFlags = 1; /* Equal operator */
+
+                        /* Wrap: Filter -> Expand (with all its children) */
+                        logicalPlanNodeAddChild(pFilter, pRelPlan);
+                        pRelPlan = pFilter;
+                      }
+                    }
+                  }
+                }
+              }
+
+              pLogical = pRelPlan;
             }
           } else {
             /* Not a relationship - compile as separate element and join */
@@ -1453,8 +1769,15 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
       break;
 
     case CYPHER_AST_REL_PATTERN:
-      /* Relationship pattern becomes an expand operation */
-      pLogical = logicalPlanNodeCreate(LOGICAL_EXPAND);
+      /* Check if this is a variable-length relationship pattern */
+      if( pAst->iFlags & REL_PATTERN_VARLEN ) {
+        /* Variable-length relationship pattern becomes a var-length expand operation */
+        pLogical = logicalPlanNodeCreate(LOGICAL_VAR_LENGTH_EXPAND);
+      } else {
+        /* Regular relationship pattern becomes an expand operation */
+        pLogical = logicalPlanNodeCreate(LOGICAL_EXPAND);
+      }
+
       if( pLogical ) {
         /* Extract relationship variable name and type */
         const char *zVarName = NULL;
@@ -1470,6 +1793,12 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
               zRelType = pLabels->zValue;
             }
           }
+        }
+
+        /* For variable-length patterns, store min/max hops */
+        if( pAst->iFlags & REL_PATTERN_VARLEN ) {
+          pLogical->iMinHops = pAst->iMinHops;
+          pLogical->iMaxHops = pAst->iMaxHops;
         }
 
         /* Store variable name in zLabel (for relationship variable) */
@@ -1488,6 +1817,42 @@ static LogicalPlanNode *compileAstNode(CypherAst *pAst, PlanContext *pContext) {
         /* Store relationship type in zProperty */
         if( zRelType ) {
           logicalPlanNodeSetProperty(pLogical, zRelType);
+        }
+
+        /* Check for inline property predicates in MATCH (e.g., [r:KNOWS {name: 'monkey'}]) */
+        for( i = 0; i < pAst->nChildren; i++ ) {
+          if( cypherAstIsType(pAst->apChildren[i], CYPHER_AST_MAP) ) {
+            CypherAst *pMap = pAst->apChildren[i];
+
+            /* Create property filters for each property in the map */
+            for( int j = 0; j < pMap->nChildren; j++ ) {
+              CypherAst *pPair = pMap->apChildren[j];
+              if( !cypherAstIsType(pPair, CYPHER_AST_PROPERTY_PAIR) ) continue;
+
+              const char *zPropName = cypherAstGetValue(pPair);
+              const char *zPropValue = NULL;
+
+              if( pPair->nChildren > 0 ) {
+                zPropValue = cypherAstGetValue(pPair->apChildren[0]);
+              }
+
+              if( zPropName && zPropValue && zVarName ) {
+                /* Create LOGICAL_PROPERTY_FILTER node */
+                LogicalPlanNode *pFilter = logicalPlanNodeCreate(LOGICAL_PROPERTY_FILTER);
+                if( pFilter ) {
+                  /* Use the relationship variable name (e.g., 'r') */
+                  logicalPlanNodeSetAlias(pFilter, zVarName);
+                  logicalPlanNodeSetProperty(pFilter, zPropName);
+                  logicalPlanNodeSetValue(pFilter, zPropValue);
+                  pFilter->iFlags = 1; /* Equal operator */
+
+                  /* Chain: Filter -> Expand */
+                  logicalPlanNodeAddChild(pFilter, pLogical);
+                  pLogical = pFilter;
+                }
+              }
+            }
+          }
         }
       }
       break;

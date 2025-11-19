@@ -52,6 +52,7 @@ typedef enum
 
   /* Projection Operations */
   LOGICAL_PROJECTION,  /* SELECT/RETURN columns */
+  LOGICAL_WITH,        /* WITH clause projection and forwarding */
   LOGICAL_DISTINCT,    /* DISTINCT modifier */
   LOGICAL_AGGREGATION, /* GROUP BY and aggregates */
 
@@ -87,7 +88,8 @@ typedef enum
   PHYSICAL_INDEX_NESTED_LOOP, /* Index-assisted nested loop */
 
   /* Expansion Operators */
-  PHYSICAL_EXPAND, /* Relationship traversal/expansion */
+  PHYSICAL_EXPAND,            /* Relationship traversal/expansion */
+  PHYSICAL_VAR_LENGTH_EXPAND, /* Variable-length path expansion */
 
   /* Other Operators */
   PHYSICAL_FILTER,      /* Predicate evaluation */
@@ -113,6 +115,7 @@ typedef struct LogicalPlanNode
 {
   LogicalPlanNodeType type; /* Type of logical operation */
   char *zAlias;             /* Variable name/alias */
+  char *zPathVar;           /* Path variable name (for p = pattern) */
   char *zLabel;             /* Node label (for scans) */
   char *zProperty;          /* Property name (for filters/indexes) */
   char *zValue;             /* Literal value (for filters) */
@@ -129,6 +132,10 @@ typedef struct LogicalPlanNode
   double rEstimatedCost;        /* Estimated execution cost */
   sqlite3_int64 iEstimatedRows; /* Estimated result rows */
 
+  /* Variable-length relationship fields (for LOGICAL_VAR_LENGTH_EXPAND) */
+  int iMinHops; /* Minimum hops for variable-length relationships (0 for fixed-length) */
+  int iMaxHops; /* Maximum hops for variable-length relationships (0 for fixed-length) */
+
   /* Additional metadata */
   int iFlags;   /* Operation flags */
   void *pExtra; /* Type-specific extra data */
@@ -142,6 +149,7 @@ typedef struct PhysicalPlanNode
 {
   PhysicalOperatorType type; /* Physical operator type */
   char *zAlias;              /* Variable name/alias */
+  char *zPathVar;            /* Path variable name (for p = pattern) */
 
   /* Operator-specific parameters */
   char *zMatchJson;    /* Serialized match criteria (MERGE) */
@@ -168,6 +176,10 @@ typedef struct PhysicalPlanNode
   struct CypherExpression **apSortKeys; /* Sort key expressions */
   int nSortKeys;                        /* Number of sort keys */
   int nLimit;                           /* LIMIT value */
+
+  /* Variable-length relationship parameters */
+  int iMinHops; /* Minimum hops for variable-length relationships (0 for fixed-length) */
+  int iMaxHops; /* Maximum hops for variable-length relationships (0 for fixed-length) */
 
   /* Additional metadata */
   void *pExtra; /* Type-specific extra data (e.g., pattern AST for CREATE) */
@@ -237,9 +249,20 @@ typedef struct MergeClauseDetails
 */
 typedef enum
 {
+  /* Graph types */
   VARIABLE_TYPE_NODE = 1,         /* Node variable: (n) */
   VARIABLE_TYPE_RELATIONSHIP = 2, /* Relationship variable: [r] */
-  VARIABLE_TYPE_PATH = 3          /* Path variable: p = pattern */
+  VARIABLE_TYPE_PATH = 3,         /* Path variable: p = pattern */
+
+  /* Scalar types */
+  VARIABLE_TYPE_INTEGER = 4,      /* Integer literal: 123 */
+  VARIABLE_TYPE_FLOAT = 5,        /* Float literal: 123.45 */
+  VARIABLE_TYPE_STRING = 6,       /* String literal: 'text' */
+  VARIABLE_TYPE_BOOLEAN = 7,      /* Boolean literal: true/false */
+  VARIABLE_TYPE_NULL = 8,         /* NULL value */
+  VARIABLE_TYPE_LIST = 9,         /* List/array: [1, 2, 3] */
+  VARIABLE_TYPE_MAP = 10,         /* Map/object: {key: value} */
+  VARIABLE_TYPE_ANY = 11          /* Unknown or any type */
 } VariableType;
 
 /*

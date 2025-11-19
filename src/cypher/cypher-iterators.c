@@ -26,6 +26,8 @@ static CypherIterator *deleteWriteIteratorWrapper (PhysicalPlanNode *pPlan,
                                                    ExecutionContext *pContext);
 static CypherIterator *cypherExpandCreate (PhysicalPlanNode *pPlan,
                                            ExecutionContext *pContext);
+static CypherIterator *cypherVarLengthExpandCreate (PhysicalPlanNode *pPlan,
+                                                     ExecutionContext *pContext);
 static CypherIterator *cypherNestedLoopJoinCreate (PhysicalPlanNode *pPlan,
                                                     ExecutionContext *pContext);
 
@@ -74,8 +76,10 @@ cypherIteratorCreate (PhysicalPlanNode *pPlan, ExecutionContext *pContext)
     case PHYSICAL_EXPAND:
       return cypherExpandCreate (pPlan, pContext);
 
+    case PHYSICAL_VAR_LENGTH_EXPAND:
+      return cypherVarLengthExpandCreate (pPlan, pContext);
+
     case PHYSICAL_NESTED_LOOP_JOIN:
-      fprintf(stderr, "DEBUG: Creating NESTED_LOOP_JOIN iterator\n");
       return cypherNestedLoopJoinCreate (pPlan, pContext);
 
     default:
@@ -370,17 +374,6 @@ mergeLiteralAstToValue (CypherAst *pAst, CypherValue **ppValue)
     }
 
   *ppValue = pValue;
-  fprintf (stderr, "DEBUG mergeLiteralAstToValue result: type=%d\n",
-           pValue->type);
-  if (pValue->type == CYPHER_VALUE_STRING)
-    {
-      fprintf (stderr, "DEBUG   string value: '%s'\n",
-               pValue->u.zString ? pValue->u.zString : "(null)");
-    }
-  else if (pValue->type == CYPHER_VALUE_INTEGER)
-    {
-      fprintf (stderr, "DEBUG   integer value: %lld\n", pValue->u.iInteger);
-    }
   return SQLITE_OK;
 }
 
@@ -810,6 +803,25 @@ allNodesScanNext (CypherIterator *pIterator, CypherResult *pResult)
   if (rc != SQLITE_OK)
     return rc;
 
+  /* If this pattern has a path variable assignment, create and bind the path */
+  if (pPlan->zPathVar)
+    {
+      CypherValue pathValue;
+      sqlite3_int64 aiNodeIds[1];
+
+      aiNodeIds[0] = nodeValue.u.iNodeId;
+
+      memset (&pathValue, 0, sizeof (pathValue));
+      cypherValueSetPath (&pathValue, aiNodeIds, 1, NULL, NULL, 0);
+
+      /* Add path to result */
+      rc = cypherResultAddColumn (pResult, pPlan->zPathVar, &pathValue);
+      cypherValueDestroy (&pathValue);
+
+      if (rc != SQLITE_OK)
+        return rc;
+    }
+
   pIterator->nRowsProduced++;
 
   return SQLITE_OK;
@@ -961,6 +973,25 @@ labelIndexScanNext (CypherIterator *pIterator, CypherResult *pResult)
                               &nodeValue);
   if (rc != SQLITE_OK)
     return rc;
+
+  /* If this pattern has a path variable assignment, create and bind the path */
+  if (pPlan->zPathVar)
+    {
+      CypherValue pathValue;
+      sqlite3_int64 aiNodeIds[1];
+
+      aiNodeIds[0] = nodeValue.u.iNodeId;
+
+      memset (&pathValue, 0, sizeof (pathValue));
+      cypherValueSetPath (&pathValue, aiNodeIds, 1, NULL, NULL, 0);
+
+      /* Add path to result */
+      rc = cypherResultAddColumn (pResult, pPlan->zPathVar, &pathValue);
+      cypherValueDestroy (&pathValue);
+
+      if (rc != SQLITE_OK)
+        return rc;
+    }
 
   pIterator->nRowsProduced++;
 
@@ -1157,24 +1188,44 @@ typedef struct FilterIteratorData
   CypherExpression *pFilter; /* Filter expression */
 } FilterIteratorData;
 
-/* Helper to get a property value from a node */
+/* Helper to get a property value from a node or relationship */
 static char *
 cypherValueGetProperty (CypherValue *pValue, const char *zProperty,
                         ExecutionContext *pContext)
 {
-  if (!pValue || pValue->type != CYPHER_VALUE_NODE || !zProperty || !pContext)
+  if (!pValue || !zProperty || !pContext)
     {
       return NULL;
     }
 
-  /* Query the properties column from the nodes table */
+  /* Handle both nodes and relationships */
+  if (pValue->type != CYPHER_VALUE_NODE && pValue->type != CYPHER_VALUE_RELATIONSHIP)
+    {
+      return NULL;
+    }
+
+  /* Query the properties column from the appropriate table */
   sqlite3_stmt *stmt;
-  char *zSql = sqlite3_mprintf (
-      "SELECT json_extract(properties, '$.%q') FROM %s WHERE id = %lld",
-      zProperty,
-      pContext->pGraph->zNodeTableName ? pContext->pGraph->zNodeTableName
-                                       : "graph_nodes",
-      pValue->u.iNodeId);
+  char *zSql;
+
+  if (pValue->type == CYPHER_VALUE_NODE)
+    {
+      zSql = sqlite3_mprintf (
+          "SELECT json_extract(properties, '$.%q') FROM %s WHERE id = %lld",
+          zProperty,
+          pContext->pGraph->zNodeTableName ? pContext->pGraph->zNodeTableName
+                                           : "graph_nodes",
+          pValue->u.iNodeId);
+    }
+  else  /* CYPHER_VALUE_RELATIONSHIP */
+    {
+      zSql = sqlite3_mprintf (
+          "SELECT json_extract(properties, '$.%q') FROM %s WHERE id = %lld",
+          zProperty,
+          pContext->pGraph->zEdgeTableName ? pContext->pGraph->zEdgeTableName
+                                           : "graph_edges",
+          pValue->u.relationship.iRelId);
+    }
 
   if (!zSql)
     return NULL;
@@ -1234,9 +1285,9 @@ filterIteratorNext (CypherIterator *pIterator, CypherResult *pResult)
                 }
             }
 
-          if (pValue && pValue->type == CYPHER_VALUE_NODE)
+          if (pValue && (pValue->type == CYPHER_VALUE_NODE || pValue->type == CYPHER_VALUE_RELATIONSHIP))
             {
-              /* Get property from node */
+              /* Get property from node or relationship */
               char *zPropValue = cypherValueGetProperty (
                   pValue, pPlan->zProperty, pIterator->pContext);
               if (zPropValue)
@@ -1399,33 +1450,26 @@ nestedLoopJoinIteratorOpen (CypherIterator *pIterator)
   NestedLoopJoinIteratorData *pData
       = (NestedLoopJoinIteratorData *)pIterator->pIterData;
 
-  fprintf(stderr, "DEBUG: NLJ Open - starting\n");
-
   /* Open both child iterators */
   int rc = pData->pLeft->xOpen (pData->pLeft);
   if (rc != SQLITE_OK)
     {
-      fprintf(stderr, "DEBUG: NLJ Open - left failed with rc=%d\n", rc);
       return rc;
     }
 
   rc = pData->pRight->xOpen (pData->pRight);
   if (rc != SQLITE_OK)
     {
-      fprintf(stderr, "DEBUG: NLJ Open - right failed with rc=%d\n", rc);
       pData->pLeft->xClose (pData->pLeft);
       return rc;
     }
 
   /* Get first row from left */
-  fprintf(stderr, "DEBUG: NLJ Open - getting first left row\n");
   memset (&pData->leftResult, 0, sizeof (CypherResult));
   rc = pData->pLeft->xNext (pData->pLeft, &pData->leftResult);
   pData->bLeftHasRow = (rc == SQLITE_OK);
-  fprintf(stderr, "DEBUG: NLJ Open - left has row: %d\n", pData->bLeftHasRow);
 
   pIterator->bOpened = 1;
-  fprintf(stderr, "DEBUG: NLJ Open - complete\n");
   return SQLITE_OK;
 }
 
@@ -1437,16 +1481,12 @@ nestedLoopJoinIteratorNext (CypherIterator *pIterator, CypherResult *pResult)
   CypherResult rightResult;
   int rc;
 
-  fprintf(stderr, "DEBUG: NLJ Next - called\n");
-
   /* Keep producing results until we run out */
   while (pData->bLeftHasRow)
     {
       /* Try to get next row from right */
-      fprintf(stderr, "DEBUG: NLJ Next - getting right row\n");
       memset (&rightResult, 0, sizeof (CypherResult));
       rc = pData->pRight->xNext (pData->pRight, &rightResult);
-      fprintf(stderr, "DEBUG: NLJ Next - right rc=%d\n", rc);
 
       if (rc == SQLITE_OK)
         {
@@ -1606,11 +1646,50 @@ projectionIteratorNext (CypherIterator *pIterator, CypherResult *pResult)
       = (ProjectionIteratorData *)pIterator->pIterData;
   int rc, i;
 
-  /* Pass-through mode: if no projections, just pass source result directly */
+  /* Check if we have a simple variable projection (zAlias and zValue set, no expressions) */
   if (pData->nProjections == 0 || !pData->apProjections)
     {
-      rc = pData->pSource->xNext (pData->pSource, pResult);
-      return rc;
+      /* Check if this is a simple variable projection with aliasing */
+      if (pIterator->pPlan && pIterator->pPlan->zAlias && pIterator->pPlan->zValue)
+        {
+          /* Get next row from source */
+          CypherResult sourceResult;
+          rc = pData->pSource->xNext (pData->pSource, &sourceResult);
+          if (rc != SQLITE_OK)
+            return rc;
+
+          /* Create new result with single projected column */
+          memset (pResult, 0, sizeof (CypherResult));
+
+          /* Look up the source variable value by name */
+          CypherValue *pSourceValue = NULL;
+          for (int i = 0; i < sourceResult.nColumns; i++)
+            {
+              if (strcmp (sourceResult.azColumnNames[i], pIterator->pPlan->zValue) == 0)
+                {
+                  pSourceValue = &sourceResult.aValues[i];
+                  break;
+                }
+            }
+
+          if (!pSourceValue)
+            {
+              /* Variable not found in source - this shouldn't happen */
+              cypherResultClear (&sourceResult);
+              return SQLITE_ERROR;
+            }
+
+          /* Add it with the alias name */
+          rc = cypherResultAddColumn (pResult, pIterator->pPlan->zAlias, pSourceValue);
+          cypherResultClear (&sourceResult);
+          return rc;
+        }
+      else
+        {
+          /* Pure pass-through mode */
+          rc = pData->pSource->xNext (pData->pSource, pResult);
+          return rc;
+        }
     }
 
   /* Projection mode: evaluate projection expressions */
@@ -1633,16 +1712,25 @@ projectionIteratorNext (CypherIterator *pIterator, CypherResult *pResult)
                                      pIterator->pContext, &projValue);
       if (rc != SQLITE_OK)
         {
-          cypherResultDestroy (&sourceResult);
+          cypherResultClear (&sourceResult);
           return rc;
         }
 
-      /* Add to result */
-      char *zColName = sqlite3_mprintf ("col%d", i);
+      /* Add to result - use alias from plan if available, otherwise generate column name */
+      char *zColName = NULL;
+      if (pIterator->pPlan && pIterator->pPlan->zAlias)
+        {
+          zColName = sqlite3_mprintf ("%s", pIterator->pPlan->zAlias);
+        }
+      else
+        {
+          zColName = sqlite3_mprintf ("col%d", i);
+        }
+
       if (!zColName)
         {
           cypherValueDestroy (&projValue);
-          cypherResultDestroy (&sourceResult);
+          cypherResultClear (&sourceResult);
           return SQLITE_NOMEM;
         }
 
@@ -1652,12 +1740,12 @@ projectionIteratorNext (CypherIterator *pIterator, CypherResult *pResult)
 
       if (rc != SQLITE_OK)
         {
-          cypherResultDestroy (&sourceResult);
+          cypherResultClear (&sourceResult);
           return rc;
         }
     }
 
-  cypherResultDestroy (&sourceResult);
+  cypherResultClear (&sourceResult);
   return SQLITE_OK;
 }
 
@@ -2116,18 +2204,16 @@ expandNext (CypherIterator *pIterator, CypherResult *pResult)
               const unsigned char *zRelType
                   = sqlite3_column_text (pData->pStmt, 2);
 
-              /* Store as string with type information for better serialization
-               */
-              relValue.type = CYPHER_VALUE_STRING;
+              /* Store as CYPHER_VALUE_RELATIONSHIP so property filters can work */
+              relValue.type = CYPHER_VALUE_RELATIONSHIP;
+              relValue.u.relationship.iRelId = iRelId;
               if (zRelType && zRelType[0])
                 {
-                  relValue.u.zString = sqlite3_mprintf (
-                      "Relationship(id=%lld,type=%s)", iRelId, zRelType);
+                  relValue.u.relationship.zType = sqlite3_mprintf ("%s", zRelType);
                 }
               else
                 {
-                  relValue.u.zString
-                      = sqlite3_mprintf ("Relationship(%lld)", iRelId);
+                  relValue.u.relationship.zType = NULL;
                 }
 
               const char *zRelAlias = pPlan->zLabel ? pPlan->zLabel : "r";
@@ -2223,6 +2309,61 @@ expandNext (CypherIterator *pIterator, CypherResult *pResult)
 
       pData->iCurrentNodeId = pNodeValue->u.iNodeId;
 
+      /* Check if relationship variable is bound (flag 0x01 set in planner) */
+      if (pPlan->iFlags & 0x01)
+        {
+          /* Relationship is bound - use the bound value instead of expanding */
+          const char *zRelAlias = pPlan->zLabel ? pPlan->zLabel : "r";
+
+          /* Look up bound relationship from current row */
+          CypherValue *pRelValue = NULL;
+          for (int i = 0; i < pData->pCurrentRow->nColumns; i++)
+            {
+              if (strcmp (pData->pCurrentRow->azColumnNames[i], zRelAlias) == 0)
+                {
+                  pRelValue = &pData->pCurrentRow->aValues[i];
+                  break;
+                }
+            }
+
+          if (!pRelValue)
+            {
+              /* Bound relationship not found - skip this row */
+              continue;
+            }
+
+          if (pRelValue->type != CYPHER_VALUE_RELATIONSHIP)
+            {
+              /* Wrong type - skip this row */
+              continue;
+            }
+
+          /* Create a single-row result with the bound relationship */
+          /* For now, just pass through the bound relationship without expanding */
+          /* The relationship is already in the result, so we just return it */
+          memset (pResult, 0, sizeof (CypherResult));
+
+          /* Copy all columns from source row (which includes the bound relationship) */
+          for (int i = 0; i < pData->pCurrentRow->nColumns; i++)
+            {
+              rc = cypherResultAddColumn (
+                  pResult, pData->pCurrentRow->azColumnNames[i],
+                  &pData->pCurrentRow->aValues[i]);
+              if (rc != SQLITE_OK)
+                {
+                  cypherResultDestroy (pResult);
+                  return rc;
+                }
+            }
+
+          fprintf(stderr, "DEBUG expandNext: Returning bound relationship result\n");
+
+          /* DON'T mark source as exhausted - we need to get ALL bound relationships */
+          /* pData->bSourceExhausted = 1; */
+
+          return SQLITE_OK;
+        }
+
       /* Prepare query for relationships from this node */
       const char *zEdgeType = pPlan->zProperty ? pPlan->zProperty : "";
       const char *zTargetLabel = NULL;
@@ -2236,19 +2377,77 @@ expandNext (CypherIterator *pIterator, CypherResult *pResult)
         }
 
       /* Build SQL query with optional edge type and target label filtering */
+
       if (zTargetLabel && zTargetLabel[0])
         {
-          /* Need to filter by target node label */
+          /* Need to filter by target node label - uses 'e' alias */
           if (zEdgeType && zEdgeType[0])
             {
-              zSql = sqlite3_mprintf (
-                  "SELECT e.target, e.id, e.edge_type FROM %s_edges e "
-                  "JOIN %s_nodes n ON e.target = n.id "
-                  "WHERE e.source = %lld AND e.edge_type = '%q' "
-                  "AND EXISTS (SELECT 1 FROM json_each(n.labels) WHERE value "
-                  "= %Q)",
-                  pGraph->zTableName, pGraph->zTableName,
-                  pData->iCurrentNodeId, zEdgeType, zTargetLabel);
+              /* Check if multiple types */
+              if (strchr(zEdgeType, '|'))
+                {
+                  /* Build IN clause for multiple types */
+                  char *zInList = NULL;
+                  const char *zStart = zEdgeType;
+                  const char *zEnd;
+
+                  while (zStart && *zStart)
+                    {
+                      zEnd = strchr(zStart, '|');
+                      if (zEnd)
+                        {
+                          int len = zEnd - zStart;
+                          char *zType = sqlite3_mprintf("%.*s", len, zStart);
+                          if (zInList)
+                            {
+                              char *zNew = sqlite3_mprintf("%s,'%q'", zInList, zType);
+                              sqlite3_free(zInList);
+                              zInList = zNew;
+                            }
+                          else
+                            {
+                              zInList = sqlite3_mprintf("'%q'", zType);
+                            }
+                          sqlite3_free(zType);
+                          zStart = zEnd + 1;
+                        }
+                      else
+                        {
+                          if (zInList)
+                            {
+                              char *zNew = sqlite3_mprintf("%s,'%q'", zInList, zStart);
+                              sqlite3_free(zInList);
+                              zInList = zNew;
+                            }
+                          else
+                            {
+                              zInList = sqlite3_mprintf("'%q'", zStart);
+                            }
+                          break;
+                        }
+                    }
+                  zSql = sqlite3_mprintf (
+                      "SELECT e.target, e.id, e.edge_type FROM %s_edges e "
+                      "JOIN %s_nodes n ON e.target = n.id "
+                      "WHERE e.source = %lld AND e.edge_type IN (%s) "
+                      "AND EXISTS (SELECT 1 FROM json_each(n.labels) WHERE value "
+                      "= %Q)",
+                      pGraph->zTableName, pGraph->zTableName,
+                      pData->iCurrentNodeId, zInList, zTargetLabel);
+                  sqlite3_free(zInList);
+                }
+              else
+                {
+                  /* Single type */
+                  zSql = sqlite3_mprintf (
+                      "SELECT e.target, e.id, e.edge_type FROM %s_edges e "
+                      "JOIN %s_nodes n ON e.target = n.id "
+                      "WHERE e.source = %lld AND e.edge_type = '%q' "
+                      "AND EXISTS (SELECT 1 FROM json_each(n.labels) WHERE value "
+                      "= %Q)",
+                      pGraph->zTableName, pGraph->zTableName,
+                      pData->iCurrentNodeId, zEdgeType, zTargetLabel);
+                }
             }
           else
             {
@@ -2264,13 +2463,66 @@ expandNext (CypherIterator *pIterator, CypherResult *pResult)
         }
       else
         {
-          /* No target label filtering */
+          /* No target label filtering - no alias */
           if (zEdgeType && zEdgeType[0])
             {
-              zSql = sqlite3_mprintf (
-                  "SELECT target, id, edge_type FROM %s_edges WHERE source = "
-                  "%lld AND edge_type = '%q'",
-                  pGraph->zTableName, pData->iCurrentNodeId, zEdgeType);
+              /* Check if multiple types */
+              if (strchr(zEdgeType, '|'))
+                {
+                  /* Build IN clause for multiple types */
+                  char *zInList = NULL;
+                  const char *zStart = zEdgeType;
+                  const char *zEnd;
+
+                  while (zStart && *zStart)
+                    {
+                      zEnd = strchr(zStart, '|');
+                      if (zEnd)
+                        {
+                          int len = zEnd - zStart;
+                          char *zType = sqlite3_mprintf("%.*s", len, zStart);
+                          if (zInList)
+                            {
+                              char *zNew = sqlite3_mprintf("%s,'%q'", zInList, zType);
+                              sqlite3_free(zInList);
+                              zInList = zNew;
+                            }
+                          else
+                            {
+                              zInList = sqlite3_mprintf("'%q'", zType);
+                            }
+                          sqlite3_free(zType);
+                          zStart = zEnd + 1;
+                        }
+                      else
+                        {
+                          if (zInList)
+                            {
+                              char *zNew = sqlite3_mprintf("%s,'%q'", zInList, zStart);
+                              sqlite3_free(zInList);
+                              zInList = zNew;
+                            }
+                          else
+                            {
+                              zInList = sqlite3_mprintf("'%q'", zStart);
+                            }
+                          break;
+                        }
+                    }
+                  zSql = sqlite3_mprintf (
+                      "SELECT target, id, edge_type FROM %s_edges WHERE source = "
+                      "%lld AND edge_type IN (%s)",
+                      pGraph->zTableName, pData->iCurrentNodeId, zInList);
+                  sqlite3_free(zInList);
+                }
+              else
+                {
+                  /* Single type */
+                  zSql = sqlite3_mprintf (
+                      "SELECT target, id, edge_type FROM %s_edges WHERE source = "
+                      "%lld AND edge_type = '%q'",
+                      pGraph->zTableName, pData->iCurrentNodeId, zEdgeType);
+                }
             }
           else
             {
@@ -3666,6 +3918,856 @@ deleteWriteIteratorWrapper (PhysicalPlanNode *pPlan,
   pIterator->pContext = pContext;
   pIterator->pPlan = pPlan;
   pIterator->pIterData = pData;
+
+  return pIterator;
+}
+
+/* ===================================================================
+** Variable-Length Expand Iterator (BFS-based)
+** Implements variable-length relationship patterns like [*1..3]
+** ===================================================================*/
+
+/* Path state during BFS traversal */
+typedef struct PathState
+{
+  sqlite3_int64 iCurrentNodeId;    /* Current node at end of path */
+  sqlite3_int64 *aiNodeIds;        /* All nodes in path (for cycle detection) */
+  sqlite3_int64 *aiRelIds;         /* All relationship IDs in path */
+  char **azRelTypes;               /* Relationship types in path */
+  int nHops;                       /* Number of hops (relationships) in path */
+  int nNodesCapacity;              /* Capacity of aiNodeIds array */
+  int nRelsCapacity;               /* Capacity of relationship arrays */
+} PathState;
+
+/* Queue node for BFS */
+typedef struct QueueNode
+{
+  PathState *pPath;                /* Path state */
+  struct QueueNode *pNext;         /* Next in queue */
+} QueueNode;
+
+/* BFS Queue */
+typedef struct BfsQueue
+{
+  QueueNode *pHead;                /* Head of queue */
+  QueueNode *pTail;                /* Tail of queue */
+  int nItems;                      /* Number of items in queue */
+} BfsQueue;
+
+typedef struct VarLengthExpandIteratorData
+{
+  CypherIterator *pSource;         /* Source iterator producing start nodes */
+  CypherResult *pCurrentRow;       /* Current source row */
+  int bSourceExhausted;            /* True if source iterator is done */
+
+  /* BFS state */
+  BfsQueue *pQueue;                /* BFS queue */
+  PathState *pCurrentPath;         /* Current path being returned */
+
+  /* Configuration from physical plan */
+  int iMinHops;                    /* Minimum hops (inclusive) */
+  int iMaxHops;                    /* Maximum hops (inclusive, -1 = unlimited) */
+  const char *zRelTypeFilter;      /* Relationship type filter (NULL = any) */
+  const char *zTargetLabel;        /* Target node label filter (NULL = any) */
+  int bDirectionForward;           /* True for ->, false for <-, -1 for undirected */
+
+  /* Safety limits */
+  int nMaxPathsTotal;              /* Maximum total paths to explore */
+  int nPathsExplored;              /* Paths explored so far */
+  int nMaxQueueSize;               /* Maximum queue size */
+
+  /* State tracking */
+  int bNeedNewSource;              /* Need to get next source node */
+} VarLengthExpandIteratorData;
+
+/* Path state management functions */
+static PathState *
+pathStateCreate (sqlite3_int64 iStartNodeId)
+{
+  PathState *pPath = (PathState *)sqlite3_malloc (sizeof (PathState));
+  if (!pPath)
+    return NULL;
+
+  memset (pPath, 0, sizeof (PathState));
+
+  pPath->iCurrentNodeId = iStartNodeId;
+  pPath->nNodesCapacity = 16;  /* Start with capacity for 16 nodes */
+  pPath->nRelsCapacity = 16;   /* Start with capacity for 16 relationships */
+
+  pPath->aiNodeIds = (sqlite3_int64 *)sqlite3_malloc (
+      sizeof (sqlite3_int64) * pPath->nNodesCapacity);
+  pPath->aiRelIds = (sqlite3_int64 *)sqlite3_malloc (
+      sizeof (sqlite3_int64) * pPath->nRelsCapacity);
+  pPath->azRelTypes = (char **)sqlite3_malloc (
+      sizeof (char *) * pPath->nRelsCapacity);
+
+  if (!pPath->aiNodeIds || !pPath->aiRelIds || !pPath->azRelTypes)
+    {
+      sqlite3_free (pPath->aiNodeIds);
+      sqlite3_free (pPath->aiRelIds);
+      sqlite3_free (pPath->azRelTypes);
+      sqlite3_free (pPath);
+      return NULL;
+    }
+
+  memset (pPath->azRelTypes, 0, sizeof (char *) * pPath->nRelsCapacity);
+
+  /* Initialize with start node */
+  pPath->aiNodeIds[0] = iStartNodeId;
+  pPath->nHops = 0;
+
+  return pPath;
+}
+
+static void
+pathStateDestroy (PathState *pPath)
+{
+  int i;
+
+  if (!pPath)
+    return;
+
+  if (pPath->azRelTypes)
+    {
+      for (i = 0; i < pPath->nHops; i++)
+        {
+          if (pPath->azRelTypes[i])
+            sqlite3_free (pPath->azRelTypes[i]);
+        }
+      sqlite3_free (pPath->azRelTypes);
+    }
+
+  sqlite3_free (pPath->aiNodeIds);
+  sqlite3_free (pPath->aiRelIds);
+  sqlite3_free (pPath);
+}
+
+static PathState *
+pathStateCopy (const PathState *pSrc)
+{
+  PathState *pDst;
+  int i;
+
+  if (!pSrc)
+    return NULL;
+
+  pDst = (PathState *)sqlite3_malloc (sizeof (PathState));
+  if (!pDst)
+    return NULL;
+
+  memset (pDst, 0, sizeof (PathState));
+
+  pDst->iCurrentNodeId = pSrc->iCurrentNodeId;
+  pDst->nHops = pSrc->nHops;
+  pDst->nNodesCapacity = pSrc->nHops + 16;  /* Add some extra capacity */
+  pDst->nRelsCapacity = pSrc->nHops + 16;
+
+  pDst->aiNodeIds = (sqlite3_int64 *)sqlite3_malloc (
+      sizeof (sqlite3_int64) * pDst->nNodesCapacity);
+  pDst->aiRelIds = (sqlite3_int64 *)sqlite3_malloc (
+      sizeof (sqlite3_int64) * pDst->nRelsCapacity);
+  pDst->azRelTypes = (char **)sqlite3_malloc (
+      sizeof (char *) * pDst->nRelsCapacity);
+
+  if (!pDst->aiNodeIds || !pDst->aiRelIds || !pDst->azRelTypes)
+    {
+      sqlite3_free (pDst->aiNodeIds);
+      sqlite3_free (pDst->aiRelIds);
+      sqlite3_free (pDst->azRelTypes);
+      sqlite3_free (pDst);
+      return NULL;
+    }
+
+  memset (pDst->azRelTypes, 0, sizeof (char *) * pDst->nRelsCapacity);
+
+  /* Copy node IDs (nHops + 1 nodes) */
+  memcpy (pDst->aiNodeIds, pSrc->aiNodeIds,
+          sizeof (sqlite3_int64) * (pSrc->nHops + 1));
+
+  /* Copy relationship IDs */
+  if (pSrc->nHops > 0)
+    {
+      memcpy (pDst->aiRelIds, pSrc->aiRelIds,
+              sizeof (sqlite3_int64) * pSrc->nHops);
+
+      /* Copy relationship types */
+      for (i = 0; i < pSrc->nHops; i++)
+        {
+          if (pSrc->azRelTypes[i])
+            {
+              pDst->azRelTypes[i] = sqlite3_mprintf ("%s", pSrc->azRelTypes[i]);
+              if (!pDst->azRelTypes[i])
+                {
+                  pathStateDestroy (pDst);
+                  return NULL;
+                }
+            }
+        }
+    }
+
+  return pDst;
+}
+
+static int
+pathStateContainsNode (const PathState *pPath, sqlite3_int64 iNodeId)
+{
+  int i;
+
+  if (!pPath)
+    return 0;
+
+  /* Check all nodes in path (nHops + 1 nodes) */
+  for (i = 0; i <= pPath->nHops; i++)
+    {
+      if (pPath->aiNodeIds[i] == iNodeId)
+        return 1;
+    }
+
+  return 0;
+}
+
+static int
+pathStateExtend (PathState *pPath, sqlite3_int64 iRelId, const char *zRelType,
+                 sqlite3_int64 iNextNodeId)
+{
+  char **azNewTypes;
+
+  if (!pPath)
+    return SQLITE_ERROR;
+
+  /* Check if we need to grow arrays */
+  if (pPath->nHops + 1 >= pPath->nRelsCapacity)
+    {
+      int nNewCapacity = pPath->nRelsCapacity * 2;
+      sqlite3_int64 *aiNewRelIds = (sqlite3_int64 *)sqlite3_realloc (
+          pPath->aiRelIds, sizeof (sqlite3_int64) * nNewCapacity);
+
+      if (!aiNewRelIds)
+        return SQLITE_NOMEM;
+
+      azNewTypes = (char **)sqlite3_realloc (
+          pPath->azRelTypes, sizeof (char *) * nNewCapacity);
+
+      if (!azNewTypes)
+        {
+          sqlite3_free (aiNewRelIds);
+          return SQLITE_NOMEM;
+        }
+
+      pPath->aiRelIds = aiNewRelIds;
+      pPath->azRelTypes = azNewTypes;
+      memset (pPath->azRelTypes + pPath->nRelsCapacity, 0,
+              sizeof (char *) * (nNewCapacity - pPath->nRelsCapacity));
+      pPath->nRelsCapacity = nNewCapacity;
+    }
+
+  if (pPath->nHops + 2 >= pPath->nNodesCapacity)
+    {
+      int nNewCapacity = pPath->nNodesCapacity * 2;
+      sqlite3_int64 *aiNewNodeIds = (sqlite3_int64 *)sqlite3_realloc (
+          pPath->aiNodeIds, sizeof (sqlite3_int64) * nNewCapacity);
+
+      if (!aiNewNodeIds)
+        return SQLITE_NOMEM;
+
+      pPath->aiNodeIds = aiNewNodeIds;
+      pPath->nNodesCapacity = nNewCapacity;
+    }
+
+  /* Add relationship and next node */
+  pPath->aiRelIds[pPath->nHops] = iRelId;
+  pPath->azRelTypes[pPath->nHops]
+      = zRelType ? sqlite3_mprintf ("%s", zRelType) : NULL;
+  pPath->nHops++;
+  pPath->aiNodeIds[pPath->nHops] = iNextNodeId;
+  pPath->iCurrentNodeId = iNextNodeId;
+
+  return SQLITE_OK;
+}
+
+/* BFS Queue management functions */
+static BfsQueue *
+bfsQueueCreate (void)
+{
+  BfsQueue *pQueue = (BfsQueue *)sqlite3_malloc (sizeof (BfsQueue));
+  if (!pQueue)
+    return NULL;
+
+  memset (pQueue, 0, sizeof (BfsQueue));
+  return pQueue;
+}
+
+static void
+bfsQueueDestroy (BfsQueue *pQueue)
+{
+  QueueNode *pNode, *pNext;
+
+  if (!pQueue)
+    return;
+
+  pNode = pQueue->pHead;
+  while (pNode)
+    {
+      pNext = pNode->pNext;
+      pathStateDestroy (pNode->pPath);
+      sqlite3_free (pNode);
+      pNode = pNext;
+    }
+
+  sqlite3_free (pQueue);
+}
+
+static int
+bfsQueueEnqueue (BfsQueue *pQueue, PathState *pPath)
+{
+  QueueNode *pNode;
+
+  if (!pQueue || !pPath)
+    return SQLITE_ERROR;
+
+  pNode = (QueueNode *)sqlite3_malloc (sizeof (QueueNode));
+  if (!pNode)
+    return SQLITE_NOMEM;
+
+  pNode->pPath = pPath;
+  pNode->pNext = NULL;
+
+  if (!pQueue->pTail)
+    {
+      pQueue->pHead = pQueue->pTail = pNode;
+    }
+  else
+    {
+      pQueue->pTail->pNext = pNode;
+      pQueue->pTail = pNode;
+    }
+
+  pQueue->nItems++;
+  return SQLITE_OK;
+}
+
+static PathState *
+bfsQueueDequeue (BfsQueue *pQueue)
+{
+  QueueNode *pNode;
+  PathState *pPath;
+
+  if (!pQueue || !pQueue->pHead)
+    return NULL;
+
+  pNode = pQueue->pHead;
+  pPath = pNode->pPath;
+
+  pQueue->pHead = pNode->pNext;
+  if (!pQueue->pHead)
+    pQueue->pTail = NULL;
+
+  pQueue->nItems--;
+  sqlite3_free (pNode);
+
+  return pPath;
+}
+
+/* Variable-length expand iterator functions */
+static int
+varLengthExpandOpen (CypherIterator *pIterator)
+{
+  VarLengthExpandIteratorData *pData
+      = (VarLengthExpandIteratorData *)pIterator->pIterData;
+  int rc;
+
+  /* Open source iterator if exists */
+  if (pData->pSource && !pData->pSource->bOpened)
+    {
+      rc = pData->pSource->xOpen (pData->pSource);
+      if (rc != SQLITE_OK)
+        return rc;
+    }
+
+  pIterator->bOpened = 1;
+  pIterator->bEof = 0;
+  pData->bSourceExhausted = 0;
+  pData->bNeedNewSource = 1;
+  pData->nPathsExplored = 0;
+
+  return SQLITE_OK;
+}
+
+static int
+varLengthExpandNext (CypherIterator *pIterator, CypherResult *pResult)
+{
+  VarLengthExpandIteratorData *pData
+      = (VarLengthExpandIteratorData *)pIterator->pIterData;
+  PhysicalPlanNode *pPlan = pIterator->pPlan;
+  GraphVtab *pGraph = pIterator->pContext->pGraph;
+  sqlite3 *pDb = pIterator->pContext->pDb;
+  int rc;
+
+  if (!pGraph || !pDb)
+    return SQLITE_ERROR;
+
+  /* Main BFS loop */
+  while (1)
+    {
+      /* Check if we need a new source node */
+      if (pData->bNeedNewSource || !pData->pQueue)
+        {
+          if (pData->bSourceExhausted)
+            {
+              pIterator->bEof = 1;
+              return SQLITE_DONE;
+            }
+
+          /* Clean up old queue */
+          if (pData->pQueue)
+            {
+              bfsQueueDestroy (pData->pQueue);
+              pData->pQueue = NULL;
+            }
+
+          /* Clean up previous row */
+          if (pData->pCurrentRow)
+            {
+              cypherResultDestroy (pData->pCurrentRow);
+              pData->pCurrentRow = NULL;
+            }
+
+          /* Allocate new result for current row */
+          pData->pCurrentRow = sqlite3_malloc (sizeof (CypherResult));
+          if (!pData->pCurrentRow)
+            return SQLITE_NOMEM;
+          memset (pData->pCurrentRow, 0, sizeof (CypherResult));
+
+          /* Get next source node */
+          if (!pData->pSource)
+            {
+              pData->bSourceExhausted = 1;
+              pIterator->bEof = 1;
+              return SQLITE_DONE;
+            }
+
+          rc = pData->pSource->xNext (pData->pSource, pData->pCurrentRow);
+          if (rc == SQLITE_DONE)
+            {
+              pData->bSourceExhausted = 1;
+              pIterator->bEof = 1;
+              return SQLITE_DONE;
+            }
+          else if (rc != SQLITE_OK)
+            {
+              return rc;
+            }
+
+          /* Extract source node ID */
+          const char *zSourceAlias = NULL;
+          if (pPlan->nChildren > 0 && pPlan->apChildren[0])
+            {
+              zSourceAlias = pPlan->apChildren[0]->zAlias;
+            }
+          if (!zSourceAlias)
+            zSourceAlias = "node";
+
+          CypherValue *pNodeValue = NULL;
+          for (int i = 0; i < pData->pCurrentRow->nColumns; i++)
+            {
+              if (strcmp (pData->pCurrentRow->azColumnNames[i], zSourceAlias) == 0)
+                {
+                  pNodeValue = &pData->pCurrentRow->aValues[i];
+                  break;
+                }
+            }
+
+          if (!pNodeValue || pNodeValue->type != CYPHER_VALUE_NODE)
+            {
+              return SQLITE_ERROR;
+            }
+
+          sqlite3_int64 iStartNodeId = pNodeValue->u.iNodeId;
+
+          /* Initialize BFS queue with start node */
+          pData->pQueue = bfsQueueCreate ();
+          if (!pData->pQueue)
+            return SQLITE_NOMEM;
+
+          PathState *pInitialPath = pathStateCreate (iStartNodeId);
+          if (!pInitialPath)
+            {
+              bfsQueueDestroy (pData->pQueue);
+              pData->pQueue = NULL;
+              return SQLITE_NOMEM;
+            }
+
+          rc = bfsQueueEnqueue (pData->pQueue, pInitialPath);
+          if (rc != SQLITE_OK)
+            {
+              pathStateDestroy (pInitialPath);
+              return rc;
+            }
+
+          pData->bNeedNewSource = 0;
+          pData->nPathsExplored = 0;
+        }
+
+      /* Check safety limits */
+      if (pData->nPathsExplored >= pData->nMaxPathsTotal)
+        {
+          /* Too many paths explored - move to next source */
+          pData->bNeedNewSource = 1;
+          continue;
+        }
+
+      if (pData->pQueue->nItems >= pData->nMaxQueueSize)
+        {
+          /* Queue too large - move to next source */
+          pData->bNeedNewSource = 1;
+          continue;
+        }
+
+      /* Dequeue next path */
+      PathState *pCurrentPath = bfsQueueDequeue (pData->pQueue);
+      if (!pCurrentPath)
+        {
+          /* Queue empty - need new source */
+          pData->bNeedNewSource = 1;
+          continue;
+        }
+
+      pData->nPathsExplored++;
+
+      /* Check if current path meets min length requirement */
+      int bPathValid = (pCurrentPath->nHops >= pData->iMinHops);
+
+      /* If path is valid and we haven't exceeded max hops, try to return it */
+      if (bPathValid)
+        {
+          /* Build result with current path */
+          memset (pResult, 0, sizeof (CypherResult));
+
+          /* Copy all columns from source row */
+          for (int i = 0; i < pData->pCurrentRow->nColumns; i++)
+            {
+              rc = cypherResultAddColumn (
+                  pResult, pData->pCurrentRow->azColumnNames[i],
+                  &pData->pCurrentRow->aValues[i]);
+              if (rc != SQLITE_OK)
+                {
+                  cypherResultDestroy (pResult);
+                  pathStateDestroy (pCurrentPath);
+                  return rc;
+                }
+            }
+
+          /* Add relationship list as CypherValue */
+          CypherValue relListValue;
+          memset (&relListValue, 0, sizeof (relListValue));
+
+          if (pCurrentPath->nHops > 0)
+            {
+              CypherValue *apRelValues = (CypherValue *)sqlite3_malloc (
+                  sizeof (CypherValue) * pCurrentPath->nHops);
+              if (!apRelValues)
+                {
+                  cypherResultDestroy (pResult);
+                  pathStateDestroy (pCurrentPath);
+                  return SQLITE_NOMEM;
+                }
+
+              for (int i = 0; i < pCurrentPath->nHops; i++)
+                {
+                  memset (&apRelValues[i], 0, sizeof (CypherValue));
+                  apRelValues[i].type = CYPHER_VALUE_RELATIONSHIP;
+                  apRelValues[i].u.relationship.iRelId = pCurrentPath->aiRelIds[i];
+                  apRelValues[i].u.relationship.zType = pCurrentPath->azRelTypes[i]
+                      ? sqlite3_mprintf ("%s", pCurrentPath->azRelTypes[i])
+                      : NULL;
+                }
+
+              cypherValueSetList (&relListValue, apRelValues, pCurrentPath->nHops);
+            }
+          else
+            {
+              /* Empty list for zero-length path */
+              cypherValueSetList (&relListValue, NULL, 0);
+            }
+
+          const char *zRelAlias = pPlan->zLabel ? pPlan->zLabel : "r";
+          rc = cypherResultAddColumn (pResult, zRelAlias, &relListValue);
+          if (rc != SQLITE_OK)
+            {
+              cypherResultDestroy (pResult);
+              pathStateDestroy (pCurrentPath);
+              return rc;
+            }
+
+          /* Add target node */
+          CypherValue targetValue;
+          memset (&targetValue, 0, sizeof (targetValue));
+          targetValue.type = CYPHER_VALUE_NODE;
+          targetValue.u.iNodeId = pCurrentPath->iCurrentNodeId;
+
+          const char *zTargetAlias = pPlan->zAlias ? pPlan->zAlias : "target";
+          rc = cypherResultAddColumn (pResult, zTargetAlias, &targetValue);
+          if (rc != SQLITE_OK)
+            {
+              cypherResultDestroy (pResult);
+              pathStateDestroy (pCurrentPath);
+              return rc;
+            }
+
+          /* If we haven't reached max hops, expand this path before returning */
+          if (pData->iMaxHops < 0 || pCurrentPath->nHops < pData->iMaxHops)
+            {
+              /* Expand current path by querying for outgoing relationships */
+              sqlite3_stmt *pStmt = NULL;
+              char *zSql;
+
+              if (pData->zRelTypeFilter && pData->zRelTypeFilter[0])
+                {
+                  zSql = sqlite3_mprintf (
+                      "SELECT target, id, edge_type FROM graph_edges "
+                      "WHERE source = %lld AND edge_type = %Q",
+                      pCurrentPath->iCurrentNodeId, pData->zRelTypeFilter);
+                }
+              else
+                {
+                  zSql = sqlite3_mprintf (
+                      "SELECT target, id, edge_type FROM graph_edges "
+                      "WHERE source = %lld",
+                      pCurrentPath->iCurrentNodeId);
+                }
+
+              if (!zSql)
+                {
+                  pathStateDestroy (pCurrentPath);
+                  return SQLITE_NOMEM;
+                }
+
+              rc = sqlite3_prepare_v2 (pDb, zSql, -1, &pStmt, NULL);
+              sqlite3_free (zSql);
+
+              if (rc == SQLITE_OK)
+                {
+                  while (sqlite3_step (pStmt) == SQLITE_ROW)
+                    {
+                      sqlite3_int64 iNextNodeId = sqlite3_column_int64 (pStmt, 0);
+                      sqlite3_int64 iRelId = sqlite3_column_int64 (pStmt, 1);
+                      const char *zRelType = (const char *)sqlite3_column_text (pStmt, 2);
+
+                      /* Check for cycle (per-path cycle detection) */
+                      if (pathStateContainsNode (pCurrentPath, iNextNodeId))
+                        continue;
+
+                      /* Create extended path */
+                      PathState *pExtendedPath = pathStateCopy (pCurrentPath);
+                      if (pExtendedPath)
+                        {
+                          rc = pathStateExtend (pExtendedPath, iRelId,
+                                                zRelType, iNextNodeId);
+                          if (rc == SQLITE_OK)
+                            {
+                              bfsQueueEnqueue (pData->pQueue, pExtendedPath);
+                            }
+                          else
+                            {
+                              pathStateDestroy (pExtendedPath);
+                            }
+                        }
+                    }
+                  sqlite3_finalize (pStmt);
+                }
+            }
+
+          pathStateDestroy (pCurrentPath);
+          return SQLITE_OK;
+        }
+      else
+        {
+          /* Path not yet valid - expand it */
+          if (pData->iMaxHops < 0 || pCurrentPath->nHops < pData->iMaxHops)
+            {
+              sqlite3_stmt *pStmt = NULL;
+              char *zSql;
+
+              if (pData->zRelTypeFilter && pData->zRelTypeFilter[0])
+                {
+                  zSql = sqlite3_mprintf (
+                      "SELECT target, id, edge_type FROM graph_edges "
+                      "WHERE source = %lld AND edge_type = %Q",
+                      pCurrentPath->iCurrentNodeId, pData->zRelTypeFilter);
+                }
+              else
+                {
+                  zSql = sqlite3_mprintf (
+                      "SELECT target, id, edge_type FROM graph_edges "
+                      "WHERE source = %lld",
+                      pCurrentPath->iCurrentNodeId);
+                }
+
+              if (!zSql)
+                {
+                  pathStateDestroy (pCurrentPath);
+                  return SQLITE_NOMEM;
+                }
+
+              rc = sqlite3_prepare_v2 (pDb, zSql, -1, &pStmt, NULL);
+              sqlite3_free (zSql);
+
+              if (rc == SQLITE_OK)
+                {
+                  while (sqlite3_step (pStmt) == SQLITE_ROW)
+                    {
+                      sqlite3_int64 iNextNodeId = sqlite3_column_int64 (pStmt, 0);
+                      sqlite3_int64 iRelId = sqlite3_column_int64 (pStmt, 1);
+                      const char *zRelType = (const char *)sqlite3_column_text (pStmt, 2);
+
+                      /* Check for cycle */
+                      if (pathStateContainsNode (pCurrentPath, iNextNodeId))
+                        {
+                          continue;
+                        }
+
+                      /* Create extended path */
+                      PathState *pExtendedPath = pathStateCopy (pCurrentPath);
+                      if (pExtendedPath)
+                        {
+                          rc = pathStateExtend (pExtendedPath, iRelId,
+                                                zRelType, iNextNodeId);
+                          if (rc == SQLITE_OK)
+                            {
+                              bfsQueueEnqueue (pData->pQueue, pExtendedPath);
+                            }
+                          else
+                            {
+                              pathStateDestroy (pExtendedPath);
+                            }
+                        }
+                    }
+                  sqlite3_finalize (pStmt);
+                }
+            }
+
+          pathStateDestroy (pCurrentPath);
+        }
+    }
+
+  return SQLITE_DONE;
+}
+
+static int
+varLengthExpandClose (CypherIterator *pIterator)
+{
+  VarLengthExpandIteratorData *pData
+      = (VarLengthExpandIteratorData *)pIterator->pIterData;
+
+  if (pData)
+    {
+      if (pData->pQueue)
+        {
+          bfsQueueDestroy (pData->pQueue);
+          pData->pQueue = NULL;
+        }
+
+      if (pData->pCurrentRow)
+        {
+          cypherResultDestroy (pData->pCurrentRow);
+          pData->pCurrentRow = NULL;
+        }
+    }
+
+  return SQLITE_OK;
+}
+
+static void
+varLengthExpandDestroy (CypherIterator *pIterator)
+{
+  VarLengthExpandIteratorData *pData
+      = (VarLengthExpandIteratorData *)pIterator->pIterData;
+
+  if (pData)
+    {
+      if (pData->pQueue)
+        {
+          bfsQueueDestroy (pData->pQueue);
+        }
+
+      if (pData->pCurrentRow)
+        {
+          cypherResultDestroy (pData->pCurrentRow);
+        }
+
+      sqlite3_free (pData);
+    }
+}
+
+static CypherIterator *
+cypherVarLengthExpandCreate (PhysicalPlanNode *pPlan,
+                             ExecutionContext *pContext)
+{
+  CypherIterator *pIterator;
+  VarLengthExpandIteratorData *pData;
+
+  pIterator = sqlite3_malloc (sizeof (CypherIterator));
+  if (!pIterator)
+    return NULL;
+
+  pData = sqlite3_malloc (sizeof (VarLengthExpandIteratorData));
+  if (!pData)
+    {
+      sqlite3_free (pIterator);
+      return NULL;
+    }
+
+  memset (pIterator, 0, sizeof (CypherIterator));
+  memset (pData, 0, sizeof (VarLengthExpandIteratorData));
+
+  /* Extract configuration from physical plan */
+  pData->iMinHops = pPlan->iMinHops;
+  pData->iMaxHops = pPlan->iMaxHops;
+  pData->zRelTypeFilter = pPlan->zProperty;
+  pData->zTargetLabel = NULL;
+  pData->bDirectionForward = 1;  /* Default to forward direction */
+
+  /* Set safety limits */
+  pData->nMaxPathsTotal = 10000;   /* Limit total paths explored per source */
+  pData->nMaxQueueSize = 10000;    /* Limit queue size */
+
+  /* Check if there's a target node specification */
+  if (pPlan->nChildren > 1 && pPlan->apChildren[1])
+    {
+      pData->zTargetLabel = pPlan->apChildren[1]->zLabel;
+    }
+
+  /* Create source iterator if there's a child plan */
+  if (pPlan->nChildren > 0 && pPlan->apChildren[0])
+    {
+      pData->pSource = cypherIteratorCreate (pPlan->apChildren[0], pContext);
+      if (!pData->pSource)
+        {
+          sqlite3_free (pData);
+          sqlite3_free (pIterator);
+          return NULL;
+        }
+    }
+
+  /* Set up iterator */
+  pIterator->xOpen = varLengthExpandOpen;
+  pIterator->xNext = varLengthExpandNext;
+  pIterator->xClose = varLengthExpandClose;
+  pIterator->xDestroy = varLengthExpandDestroy;
+  pIterator->pContext = pContext;
+  pIterator->pPlan = pPlan;
+  pIterator->pIterData = pData;
+
+  /* Set up child iterators array */
+  if (pData->pSource)
+    {
+      pIterator->apChildren = sqlite3_malloc (sizeof (CypherIterator *));
+      if (pIterator->apChildren)
+        {
+          pIterator->apChildren[0] = pData->pSource;
+          pIterator->nChildren = 1;
+        }
+    }
 
   return pIterator;
 }

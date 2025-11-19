@@ -402,8 +402,47 @@ char *cypherValueToJson(const CypherValue *pValue) {
             return sqlite3_mprintf("{\"_type\":\"node\",\"_id\":%lld}", pValue->u.iNodeId);
             
         case CYPHER_VALUE_RELATIONSHIP:
-            return sqlite3_mprintf("{\"_type\":\"relationship\",\"_id\":%lld}", pValue->u.iRelId);
-            
+            /* Serialize relationship with type information */
+            if (pValue->u.relationship.zType) {
+                return sqlite3_mprintf("\"Relationship(id=%lld,type=%s)\"",
+                                     pValue->u.relationship.iRelId,
+                                     pValue->u.relationship.zType);
+            } else {
+                return sqlite3_mprintf("\"Relationship(id=%lld)\"", pValue->u.relationship.iRelId);
+            }
+
+        case CYPHER_VALUE_PATH: {
+            /* Serialize path as "<(node1)-[rel1]->(node2)-[rel2]->(node3)>" */
+            char *zResult = sqlite3_mprintf("\"<");
+            if( !zResult ) return NULL;
+
+            /* Add nodes and relationships in alternating order */
+            for( int i = 0; i < pValue->u.path.nNodes; i++ ) {
+                /* Add node */
+                char *zNew = sqlite3_mprintf("%s()", zResult);
+                sqlite3_free(zResult);
+                if( !zNew ) return NULL;
+                zResult = zNew;
+
+                /* Add relationship if not the last node */
+                if( i < pValue->u.path.nRels ) {
+                    if( pValue->u.path.azRelTypes && pValue->u.path.azRelTypes[i] ) {
+                        zNew = sqlite3_mprintf("%s-[:%s]->", zResult, pValue->u.path.azRelTypes[i]);
+                    } else {
+                        zNew = sqlite3_mprintf("%s-[]->", zResult);
+                    }
+                    sqlite3_free(zResult);
+                    if( !zNew ) return NULL;
+                    zResult = zNew;
+                }
+            }
+
+            /* Close path representation */
+            char *zFinal = sqlite3_mprintf("%s>\"", zResult);
+            sqlite3_free(zResult);
+            return zFinal;
+        }
+
         default:
             return sqlite3_mprintf("null");
     }

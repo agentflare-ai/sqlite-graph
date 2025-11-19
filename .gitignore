@@ -184,7 +184,6 @@ docs/.doctrees/
 
 *.c.*
 .claude/
-.agents/
-.tck/
-tck/
+# agents/
+# tck/
 logs/

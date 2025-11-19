@@ -44,6 +44,7 @@ void logicalPlanNodeDestroy(LogicalPlanNode *pNode) {
   /* Free allocated memory */
   sqlite3_free(pNode->apChildren);
   sqlite3_free(pNode->zAlias);
+  sqlite3_free(pNode->zPathVar);
   sqlite3_free(pNode->zLabel);
   sqlite3_free(pNode->zProperty);
   sqlite3_free(pNode->zValue);
@@ -179,6 +180,7 @@ const char *logicalPlanNodeTypeName(LogicalPlanNodeType type) {
     case LOGICAL_NESTED_LOOP_JOIN:  return "NESTED_LOOP_JOIN";
     case LOGICAL_CARTESIAN_PRODUCT: return "CARTESIAN_PRODUCT";
     case LOGICAL_PROJECTION:        return "PROJECTION";
+    case LOGICAL_WITH:              return "WITH";
     case LOGICAL_DISTINCT:          return "DISTINCT";
     case LOGICAL_AGGREGATION:       return "AGGREGATION";
     case LOGICAL_SORT:              return "SORT";
