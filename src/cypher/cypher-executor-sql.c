@@ -43,10 +43,18 @@ static void cypherExecuteSqlFunc(
     sqlite3_result_error(context, "cypher_execute() requires exactly one argument", -1);
     return;
   }
-  
+
   zQuery = (const char*)sqlite3_value_text(argv[0]);
   if( !zQuery ) {
     sqlite3_result_null(context);
+    return;
+  }
+
+  /* Check that graph virtual table has been initialized */
+  if( !pGraph ) {
+    sqlite3_result_error(context,
+      "Graph virtual table not initialized. Create a graph table first using: "
+      "CREATE VIRTUAL TABLE graph USING graph();", -1);
     return;
   }
   
@@ -177,7 +185,15 @@ static void cypherExecuteExplainSqlFunc(
     sqlite3_result_null(context);
     return;
   }
-  
+
+  /* Check that graph virtual table has been initialized */
+  if( !pGraph ) {
+    sqlite3_result_error(context,
+      "Graph virtual table not initialized. Create a graph table first using: "
+      "CREATE VIRTUAL TABLE graph USING graph();", -1);
+    return;
+  }
+
   /* Parse and plan the query (same as cypher_execute) */
   pParser = cypherParserCreate();
   if( !pParser ) {
@@ -283,9 +299,17 @@ static void cypherTestExecuteSqlFunc(
     sqlite3_result_error(context, "cypher_test_execute() takes no arguments", -1);
     return;
   }
-  
+
+  /* Check that graph virtual table has been initialized */
+  if( !pGraph ) {
+    sqlite3_result_error(context,
+      "Graph virtual table not initialized. Create a graph table first using: "
+      "CREATE VIRTUAL TABLE graph USING graph();", -1);
+    return;
+  }
+
   /* Execute a simple test query */
-  zResult = cypherExecuteTestQuery(sqlite3_context_db_handle(context), 
+  zResult = cypherExecuteTestQuery(sqlite3_context_db_handle(context),
                                   "MATCH (n) RETURN n");
   
   if( zResult ) {
