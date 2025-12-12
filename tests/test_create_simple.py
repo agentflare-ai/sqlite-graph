@@ -9,9 +9,9 @@ conn = sqlite3.connect(":memory:")
 conn.enable_load_extension(True)
 
 try:
-    conn.load_extension("./build/libgraph.dylib")
+    conn.load_extension("./build/libgraph")
 except:
-    conn.load_extension("./build/libgraph.so")
+    conn.load_extension("./build/libgraph")
 
 print("Testing: CREATE ()")
 

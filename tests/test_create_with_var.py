@@ -9,9 +9,9 @@ conn = sqlite3.connect(":memory:")
 conn.enable_load_extension(True)
 
 try:
-    conn.load_extension("./build/libgraph.dylib")
+    conn.load_extension("./build/libgraph")
 except:
-    conn.load_extension("./build/libgraph.so")
+    conn.load_extension("./build/libgraph")
 
 conn.execute("CREATE TABLE nodes(id INTEGER PRIMARY KEY, labels TEXT, properties TEXT)")
 conn.execute("CREATE TABLE edges(id INTEGER PRIMARY KEY, source INTEGER, target INTEGER, edge_type TEXT, properties TEXT)")
